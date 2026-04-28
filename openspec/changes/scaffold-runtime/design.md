@@ -120,6 +120,33 @@ Feature changes append `0002_*.sql` etc. as they need them.
 
 **Decision:** `cargo-bundle` config in [crates/pi-oven/Bundle.toml](crates/pi-oven/Bundle.toml) (or `[package.metadata.bundle]` in `Cargo.toml`); `cargo bundle --release` produces `pi-oven.app`. Dev workflow remains `cargo run -p pi-oven`, which launches an unbundled binary that opens a window directly — fine for development.
 
+### D11. Multi-crate workspace split for fast iteration
+
+**Why:** Rust compile time is the dominant friction in client iteration. A single `pi-oven` crate would mean every UI tweak recompiles networking and the entire wgpu pipeline. Splitting the client into five workspace members contains the blast radius of edits — modifying a widget rebuilds one library plus the binary, not the whole rendering stack. Locking this in at scaffold time is essential because retrofitting a crate split mid-implementation is expensive (cross-crate visibility changes, ripple through every `use` statement).
+
+**Decision:** five workspace members, all under `crates/`:
+- `pi-oven-protocol` — wire types, `Msg` enum, codec, golden-fixture tests. The most stable crate; everyone else depends on it.
+- `pi-oven-render` — cell grid, `RatatuiGridBackend`, wgpu+glyphon paint, image, theme. Heaviest GPU code; isolated for fast non-render rebuilds.
+- `pi-oven-ui` — ratatui widgets and layouts, written against the generic `Backend` trait so it doesn't pin a backend choice.
+- `pi-oven-net` — WebSocket client and reconnect/replay logic.
+- `pi-oven` — the binary; main, app shell, key dispatch, config, clipboard, theme loader. Thin glue layer.
+
+Plus three supporting decisions that ride along:
+
+- **Dev profile** (workspace `Cargo.toml`): `opt-level=0`, `debug="line-tables-only"`, `codegen-units=256`, `incremental=true`; `[profile.dev.package."*"]` strips dependency debuginfo to halve link size.
+- **`lld` linker** via `.cargo/config.toml` for the macOS targets — saves 1-3s per incremental link. README documents `brew install llvm`.
+- **Dual ratatui backend** behind a binary-crate feature flag: `dev-wgpu` (default, real native rendering) vs `dev-crossterm` (terminal-based, fast iteration when not testing modifier keys). Widget code remains backend-agnostic.
+
+Full rationale and tactical follow-ups (shader hot reload, snapshot tests, design playground) live in the **Developer iteration speed** section of the plan.
+
+**Alternatives considered:**
+
+- *Single crate.* Simpler scaffolding but punishes every iteration thereafter. Rejected.
+- *Finer granularity* (e.g. `pi-oven-grid` separate from `pi-oven-paint`). Overkill for v1; collapse if it turns out we want it, easier than splitting later.
+- *Hot patching via `subsecond` / dynamic-library reload.* High implementation cost, marginal benefit over fast incremental rebuilds. Skip in v1.
+
+**Trade-offs:** more `Cargo.toml` files; some boilerplate when adding cross-crate types. Mitigated by keeping `pi-oven-protocol` very stable (most types crossing crate boundaries live there).
+
 ## Risks / Trade-offs
 
 - **[Risk] winit's macOS modifier handling is correct but our renderer is unfamiliar territory.** Mitigation: scope this change to a *placeholder render only* — a single string in a window. Validate the render pipeline before scaling it up; defer all real UI to later changes.

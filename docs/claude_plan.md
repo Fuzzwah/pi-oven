@@ -775,6 +775,77 @@ PRAGMA temp_store = MEMORY;
 
 ---
 
+## Developer iteration speed
+
+Compile time is the silent killer of momentum. We optimise for "save → see result in <2 seconds" wherever possible. Decisions split into **lock in at scaffold time** (architectural — expensive to retrofit) and **layer in incrementally** (configuration — cheap to add any time).
+
+### Lock in at scaffold time
+
+**Multi-crate workspace split.** The Rust client lives across five workspace members so editing UI doesn't recompile networking and vice-versa:
+
+- `pi-oven-protocol` — wire types, `Msg` enum, codec, golden-fixture tests. Stable; rarely changes.
+- `pi-oven-render` — cell grid, `RatatuiGridBackend`, wgpu+glyphon paint pipeline, image-quad pass, theme uniform. Heavy GPU code; isolating it keeps incremental rebuilds fast.
+- `pi-oven-ui` — ratatui widgets, layouts, sidebar, tabs, conversation, input, pickers. Pure logic; rebuilds quickly.
+- `pi-oven-net` — WebSocket client, reconnect/replay logic. Independent of UI.
+- `pi-oven` (binary) — main, app shell, key dispatch, config, clipboard, theme loader. Tiny crate; thin glue.
+
+A change inside `pi-oven-ui` recompiles ~one library crate plus the binary. A wgsl shader change doesn't touch any Rust at all. A protocol change triggers the most rebuilds — but that's by design, since protocol churn should be deliberate. Widgets in `pi-oven-ui` write against the generic `ratatui::backend::Backend` trait, so neither backend implementation leaks into widget code.
+
+**Dual ratatui backend behind a feature flag.** The `pi-oven` binary supports both:
+
+- `--features dev-crossterm` — runs in a normal terminal using `ratatui::backend::CrosstermBackend`. Skips the entire wgpu/winit startup cost; perfect for fast iteration on layouts and widget logic. Caveat: macOS modifier keys aren't reliable here, so you can't use it to test cmd+1 / cmd+\` flows.
+- `--features dev-wgpu` (default) — the real native macOS app via our custom `RatatuiGridBackend`.
+
+**Dev profile** in [Cargo.toml](Cargo.toml) workspace root:
+
+```toml
+[profile.dev]
+opt-level = 0
+debug = "line-tables-only"   # smaller debuginfo, faster link
+codegen-units = 256
+incremental = true
+
+[profile.dev.package."*"]
+opt-level = 0
+debug = false                 # don't pay for debuginfo on dependencies
+```
+
+**Linker config** in [.cargo/config.toml](.cargo/config.toml):
+
+```toml
+[target.aarch64-apple-darwin]
+linker = "clang"
+rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+
+[target.x86_64-apple-darwin]
+linker = "clang"
+rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+```
+
+`lld` saves 1-3 seconds per incremental link on macOS. Requires `brew install llvm` (or any source of `lld`); documented in the README.
+
+### Layer in incrementally
+
+Useful but not foundational; can land at any point.
+
+- **`cargo watch -x check`** in one terminal, `cargo run` in another. Most type errors surface in <1s without ever invoking the linker. Documented in scripts; one-time `cargo install cargo-watch`.
+- **Shader hot reload.** wgsl files watched at runtime via `notify`; on change, recompile and rebind. Tweaking the paint pipeline never triggers a Rust rebuild. Lands with the theming slice, since theme uniform work and shader work cluster.
+- **Theme hot reload.** TOML files in `~/.pi-oven/themes/` watched at runtime; reloaded on save. In the polish slice per existing plan; cheap to pull earlier if useful.
+- **ratatui `TestBackend` snapshot tests** in `pi-oven-ui` — find layout regressions in milliseconds, no GUI required. Adopt as widgets stabilise.
+- **"Design playground" sub-binary** (e.g. `crates/pi-oven-playground/`) — a tiny crate that imports `pi-oven-render` + `pi-oven-ui` and renders a hardcoded conversation transcript with no server, no networking. Iterate on visuals in total isolation. Cold build ~5s, instant feedback. Add when first useful — the crate split makes this almost free.
+- **`cargo-nextest`** for the test suite. Faster than the default test harness.
+
+### Server side
+
+`tsx watch` (or `node --watch`) restarts the server on save. Normally that would kill every pi session — but the eager-reattach (gotcha 3) and replay-on-reconnect (gotcha 6) machinery already make server restart invisible to a connected client: agents resume from pi's session files on restart, the NDJSON event log fills the conversation pane via replay. **Crash recovery and hot reload are the same code path.** A clean restart is ~300ms; the client sees a brief disconnect with seamless catch-up.
+
+### What we're explicitly not doing
+
+- **Full Rust hot patching** (`subsecond` from Dioxus, dynamic-library reload). High complexity; marginal gain over fast incremental rebuilds; skip in v1.
+- **Layout changes without a recompile.** Would mean externalising widget definitions to a runtime format and fighting Rust's type system. The compile-time wins above are simpler and good enough.
+
+---
+
 ## Sequencing (within the full-workflow MVP)
 
 Even though the target is end-to-end, build in slices that each leave a working app. Each slice is shippable on its own.
@@ -832,22 +903,39 @@ Run unit tests for: `default-branch.ts` (mocked git), tracker adapters (record/r
 
 ## Critical files to create
 
-**Client (Rust)**
-- [Cargo.toml](Cargo.toml) (workspace root)
-- [crates/pi-oven/Cargo.toml](crates/pi-oven/Cargo.toml) — winit, wgpu, glyphon, ratatui, tokio, tokio-tungstenite, serde, clap
-- [crates/pi-oven/src/main.rs](crates/pi-oven/src/main.rs) — winit event loop entry
-- [crates/pi-oven/src/render/backend.rs](crates/pi-oven/src/render/backend.rs) — custom `ratatui::backend::Backend` writing to a cell grid
-- [crates/pi-oven/src/render/paint.rs](crates/pi-oven/src/render/paint.rs) — wgpu + glyphon paint pass
-- [crates/pi-oven/src/render/image.rs](crates/pi-oven/src/render/image.rs) — image-quad pass on top of the cell grid
-- [crates/pi-oven/src/render/theme.rs](crates/pi-oven/src/render/theme.rs) — `Theme` struct, `SemanticColor` enum, palette uniform, fallback resolution
+**Client (Rust workspace, five crates)**
+- [Cargo.toml](Cargo.toml) — workspace root: members, dev profile (`opt-level=0`, `debug="line-tables-only"`, `codegen-units=256`)
+- [.cargo/config.toml](.cargo/config.toml) — `lld` linker for `aarch64-apple-darwin` and `x86_64-apple-darwin`
+
+`pi-oven-protocol` — wire types, stable, depended on by everyone:
+- [crates/pi-oven-protocol/Cargo.toml](crates/pi-oven-protocol/Cargo.toml)
+- [crates/pi-oven-protocol/src/lib.rs](crates/pi-oven-protocol/src/lib.rs) — `Msg` enum (serde-tagged), must match `protocol.ts` exactly
+- [crates/pi-oven-protocol/tests/fixtures.rs](crates/pi-oven-protocol/tests/fixtures.rs) — golden-JSON round-trip tests against `packages/pi-oven-server/test/fixtures/protocol/`
+
+`pi-oven-render` — cell grid, GPU paint, theme:
+- [crates/pi-oven-render/Cargo.toml](crates/pi-oven-render/Cargo.toml) — `ratatui`, `wgpu`, `glyphon`, `image`, `bytemuck`
+- [crates/pi-oven-render/src/grid.rs](crates/pi-oven-render/src/grid.rs) — cell buffer (char, semantic-fg, semantic-bg, attrs)
+- [crates/pi-oven-render/src/backend.rs](crates/pi-oven-render/src/backend.rs) — custom `ratatui::backend::Backend` writing into the grid
+- [crates/pi-oven-render/src/paint.rs](crates/pi-oven-render/src/paint.rs) — wgpu + glyphon paint pass, theme uniform
+- [crates/pi-oven-render/src/image.rs](crates/pi-oven-render/src/image.rs) — image-quad pass on top of the cell grid
+- [crates/pi-oven-render/src/theme.rs](crates/pi-oven-render/src/theme.rs) — `Theme` struct, `SemanticColor` enum, palette uniform
+
+`pi-oven-ui` — ratatui widgets, layouts (Backend-agnostic):
+- [crates/pi-oven-ui/Cargo.toml](crates/pi-oven-ui/Cargo.toml) — `ratatui` (default features off), `pi-oven-protocol`
+- [crates/pi-oven-ui/src/](crates/pi-oven-ui/src/) — sidebar, tabs, conversation, input, pickers, layouts
+
+`pi-oven-net` — WebSocket client:
+- [crates/pi-oven-net/Cargo.toml](crates/pi-oven-net/Cargo.toml) — `tokio`, `tokio-tungstenite`, `pi-oven-protocol`
+- [crates/pi-oven-net/src/](crates/pi-oven-net/src/) — connect, send/receive, reconnect with backoff, attachment-upload helper
+
+`pi-oven` — binary, glue, packaging:
+- [crates/pi-oven/Cargo.toml](crates/pi-oven/Cargo.toml) — depends on all four lib crates plus `winit`, `clap`, `tokio`, `arboard`, `tracing`, `tracing-subscriber`, `anyhow`. Features: `dev-wgpu` (default), `dev-crossterm`. `cargo-bundle` metadata.
+- [crates/pi-oven/src/main.rs](crates/pi-oven/src/main.rs) — winit event loop entry (or crossterm dev loop, behind feature)
+- [crates/pi-oven/src/keys.rs](crates/pi-oven/src/keys.rs) — winit modifiers → semantic actions
+- [crates/pi-oven/src/clipboard.rs](crates/pi-oven/src/clipboard.rs) — `arboard` wrapper, image detection, PNG normalisation
 - [crates/pi-oven/src/themes.rs](crates/pi-oven/src/themes.rs) — bundled theme loader, user-theme directory scan, name → `Theme` lookup
 - [crates/pi-oven/assets/themes/](crates/pi-oven/assets/themes/) — bundled `*.toml` (Catppuccin, Tokyo Night, Solarized, Nord, Dracula, Gruvbox, Rose Pine, Everforest, pi-oven Default)
-- [crates/pi-oven/src/clipboard.rs](crates/pi-oven/src/clipboard.rs) — `arboard` wrapper, image detection, PNG normalisation
-- [crates/pi-oven/src/keys.rs](crates/pi-oven/src/keys.rs) — winit modifiers → semantic actions
-- [crates/pi-oven/src/net/codec.rs](crates/pi-oven/src/net/codec.rs) — must match `protocol.ts` exactly
-- [crates/pi-oven/src/ui/](crates/pi-oven/src/ui/) — sidebar, tabs, conversation, input, pickers
-- [crates/pi-oven/tests/protocol_fixtures.rs](crates/pi-oven/tests/protocol_fixtures.rs) — golden-fixture round-trip tests
-- [crates/pi-oven/Info.plist](crates/pi-oven/Info.plist) + [crates/pi-oven/Bundle.toml](crates/pi-oven/Bundle.toml) — `cargo-bundle` config
+- [crates/pi-oven/Info.plist](crates/pi-oven/Info.plist) + Bundle config
 
 **Server (Node/TS)**
 - [packages/pi-oven-server/package.json](packages/pi-oven-server/package.json) — pinned `@mariozechner/pi-coding-agent`, scripts (`dev`, `migrate:*`, `fsck`)

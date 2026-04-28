@@ -81,7 +81,12 @@ Letting the agent commit, push, and open the PR keeps the conversational loop ti
 
 ```
 pi-oven/
-├── crates/pi-oven/              # Rust client, native macOS app    (TBD: scaffold-runtime)
+├── crates/                      # Rust workspace (TBD: scaffold-runtime)
+│   ├── pi-oven/                 #   binary — native macOS app, main, keys, clipboard, themes
+│   ├── pi-oven-protocol/        #   wire types shared with the server
+│   ├── pi-oven-render/          #   cell grid, ratatui backend, wgpu+glyphon paint, theme
+│   ├── pi-oven-ui/              #   widgets and layouts (backend-agnostic)
+│   └── pi-oven-net/             #   WebSocket client, reconnect/replay
 ├── packages/pi-oven-server/     # Node/TS server                   (TBD: scaffold-runtime)
 ├── docs/claude_plan.md          # Architecture plan, decisions, gotchas
 ├── openspec/                    # OpenSpec changes & approved specs
@@ -90,6 +95,8 @@ pi-oven/
 ├── AGENTS.md                    # Orientation for agent sessions
 └── README.md                    # You are here
 ```
+
+Splitting the client across crates is deliberate — see the *Developer iteration speed* section of [docs/claude_plan.md](docs/claude_plan.md). Editing widgets only recompiles `pi-oven-ui` + the binary, not the GPU pipeline.
 
 ## Project conventions
 
@@ -103,12 +110,43 @@ Every feature lands as an OpenSpec change. Bug fixes track issues on Forgejo / G
 
 ## Development
 
-Build commands will land with [scaffold-runtime](openspec/changes/scaffold-runtime/). The intended shape:
+### Prerequisites
 
-- `cargo run -p pi-oven` — launch the client (opens a native macOS window)
-- `cargo bundle --release` — package the client as `pi-oven.app`
-- `pnpm --filter pi-oven-server dev` — run the server
-- `pnpm --filter pi-oven-server test` — server unit tests
+- **Rust** stable (install via [rustup](https://rustup.rs/)).
+- **Node.js** 20+.
+- **pnpm** — version pinned via the root `package.json` `packageManager` field; enable with `corepack enable`.
+- **cargo-bundle** — for producing the macOS `.app`. Install with `cargo install cargo-bundle`.
+
+### Client (Rust, macOS)
+
+```bash
+cargo run -p pi-oven           # launch the unbundled client (opens a native macOS window)
+cargo bundle --release         # package the client as pi-oven.app under target/release/bundle/osx/
+RUST_LOG=debug cargo run -p pi-oven   # verbose logging (useful for inspecting cmd/option key events)
+```
+
+### Server (Node/TS)
+
+```bash
+pnpm install                                  # install workspace deps
+pnpm --filter pi-oven-server dev              # run the server in watch mode
+pnpm --filter pi-oven-server test             # run vitest unit tests
+pnpm --filter pi-oven-server build            # compile to dist/
+pnpm --filter pi-oven-server start            # run the built server
+pnpm --filter pi-oven-server migrate:status   # list applied + pending migrations
+pnpm --filter pi-oven-server migrate:new <slug>   # scaffold the next-numbered migration
+pnpm --filter pi-oven-server migrate:reset    # DEV-only: wipe state.db and re-run migrations
+```
+
+### State directory
+
+The server owns `~/.pi-oven/`:
+
+- `server.toml` — optional config; mode must be `0600` or stricter, env vars (`PI_OVEN_DATA_DIR`, `PI_OVEN_LOG_LEVEL`, `PI_OVEN_TZ`) override file values.
+- `server.lock` — single-instance lock (auto-released on exit).
+- `state.db` — primary SQLite database (mode `0600`).
+- `state.db.bak.<unix-ms>` — automatic snapshots taken before any pending migration runs; the 10 most recent are kept.
+- `logs/server-<YYYY-MM-DD>.ndjson` — daily NDJSON log files; the 7 most recent are kept.
 
 ## License
 
