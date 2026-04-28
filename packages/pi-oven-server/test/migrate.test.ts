@@ -38,7 +38,7 @@ describe("migrate", () => {
   it("applies all migrations on a fresh database, taking a single backup", async () => {
     writeFileSync(
       join(migrationsDir, "0001_initial.sql"),
-      `CREATE TABLE _migrations (
+      `CREATE TABLE IF NOT EXISTS _migrations (
          id INTEGER PRIMARY KEY,
          name TEXT NOT NULL UNIQUE,
          checksum TEXT NOT NULL,
@@ -73,7 +73,7 @@ describe("migrate", () => {
   it("is a no-op when the database is already current (no backup taken)", async () => {
     writeFileSync(
       join(migrationsDir, "0001_initial.sql"),
-      `CREATE TABLE _migrations (
+      `CREATE TABLE IF NOT EXISTS _migrations (
          id INTEGER PRIMARY KEY,
          name TEXT NOT NULL UNIQUE,
          checksum TEXT NOT NULL,
@@ -105,7 +105,7 @@ describe("migrate", () => {
   it("only applies the remaining migrations when partially applied", async () => {
     writeFileSync(
       join(migrationsDir, "0001_initial.sql"),
-      `CREATE TABLE _migrations (
+      `CREATE TABLE IF NOT EXISTS _migrations (
          id INTEGER PRIMARY KEY,
          name TEXT NOT NULL UNIQUE,
          checksum TEXT NOT NULL,
@@ -141,7 +141,7 @@ describe("migrate", () => {
     const initialPath = join(migrationsDir, "0001_initial.sql");
     writeFileSync(
       initialPath,
-      `CREATE TABLE _migrations (
+      `CREATE TABLE IF NOT EXISTS _migrations (
          id INTEGER PRIMARY KEY,
          name TEXT NOT NULL UNIQUE,
          checksum TEXT NOT NULL,
@@ -161,7 +161,7 @@ describe("migrate", () => {
     // Tamper: rewrite the file with semantically different content
     writeFileSync(
       initialPath,
-      `CREATE TABLE _migrations (
+      `CREATE TABLE IF NOT EXISTS _migrations (
          id INTEGER PRIMARY KEY,
          name TEXT NOT NULL UNIQUE,
          checksum TEXT NOT NULL,
@@ -196,7 +196,7 @@ describe("migrate", () => {
   it("rolls back a migration whose statements throw, leaving _migrations unchanged", async () => {
     writeFileSync(
       join(migrationsDir, "0001_initial.sql"),
-      `CREATE TABLE _migrations (
+      `CREATE TABLE IF NOT EXISTS _migrations (
          id INTEGER PRIMARY KEY,
          name TEXT NOT NULL UNIQUE,
          checksum TEXT NOT NULL,

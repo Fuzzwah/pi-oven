@@ -254,9 +254,8 @@ impl Painter {
         buffer.set_rich_text(
             &mut self.font_system,
             spans.iter().map(|(t, a)| (*t, a.clone())),
-            &default_attrs,
+            default_attrs,
             Shaping::Advanced,
-            None,
         );
         buffer.shape_until_scroll(&mut self.font_system, false);
 

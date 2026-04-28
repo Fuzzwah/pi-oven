@@ -6,8 +6,9 @@ publish = false
 
 [dependencies]
 ratatui = { version = "0.29", default-features = false }
-wgpu = "22"
+wgpu = "23"
 glyphon = "0.7"
 image = { version = "0.25", default-features = false, features = ["png"] }
 bytemuck = { version = "1", features = ["derive"] }
 winit = "0.30"
+anyhow = "1"
