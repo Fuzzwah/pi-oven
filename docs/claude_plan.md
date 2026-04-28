@@ -150,6 +150,7 @@ CREATE TABLE projects (
   tracker_base   TEXT,
   tracker_repo   TEXT,
   tracker_token  TEXT,                    -- plaintext v1; encrypted later
+  theme          TEXT,                    -- bundled or user theme name; NULL = use global default
   created_at     INTEGER NOT NULL
 );
 
@@ -266,8 +267,10 @@ Single tagged-union `Msg` type, mirrored in `protocol.ts` and `codec.rs`. Select
 - `S→C AuthFailed { reason }` then close
 
 **Project management**
-- `C→S AddProject { kind: 'local-dir'|'local-repo'|'clone', source, target?, name, worktree_base, tracker?: TrackerCfg }`
-- `S→C ProjectAdded { project }` / `ProjectError { msg }`
+- `C→S AddProject { kind: 'local-dir'|'local-repo'|'clone', source, target?, name, worktree_base, tracker?: TrackerCfg, theme?: string }`
+- `S→C ProjectAdded { project }` / `ProjectError { msg }`  (`project` carries `theme: string | null`)
+- `C→S UpdateProject { project_id, patch: { name?, theme?, tracker?, ... } }`
+- `S→C ProjectUpdated { project }`
 - `C→S RemoveProject { project_id }`
 
 **New-workspace flow**
@@ -470,6 +473,99 @@ This whole feature requires that the pi SDK accepts image content blocks alongsi
 - Drag-drop support for image files onto the window.
 - Server-side OCR / image preprocessing.
 - Non-image attachments (PDFs, code archives) — would want different UX and a richer pipeline.
+
+---
+
+## Theming
+
+Each project can declare its own theme; switching tabs across projects auto-switches the TUI's whole colour scheme. Useful as a visual cue when context-switching, for matching a project's brand, or just personal preference per repo.
+
+### Theme model
+
+A theme is a named TOML file mapping a fixed set of **semantic colours** to RGB:
+
+```toml
+# tokyo-night.toml (bundled or in ~/.pi-oven/themes/)
+name = "Tokyo Night"
+variant = "dark"          # 'dark' | 'light' — used for OS chrome hints (dark window titlebar etc.)
+
+[colours]
+background           = "#1a1b26"   # main pane fill
+background_secondary = "#16161e"   # sidebar, status bar
+background_tertiary  = "#2f334d"   # subtle highlights, hover states
+foreground           = "#c0caf5"   # primary text
+foreground_dim       = "#9aa5ce"   # secondary text
+foreground_muted     = "#565f89"   # placeholder / disabled
+accent               = "#7aa2f7"   # active tab, focused widget, primary highlight
+accent_secondary     = "#bb9af7"   # secondary highlight (e.g. user-message bubble)
+border               = "#3b4261"
+border_active        = "#7aa2f7"
+tab_active           = "#7aa2f7"
+tab_inactive         = "#565f89"
+success              = "#9ece6a"
+warning              = "#e0af68"
+error                = "#f7768e"
+```
+
+Widgets always paint with **semantic** colour identifiers (`Color::Accent`, `Color::Background`, `Color::Error`, etc.) — never literal RGB. The active theme resolves them at paint time, so a theme swap is a uniform-buffer update + redraw — no relayout, no flicker, sub-millisecond.
+
+### Bundled set
+
+Ship a broad selection out of the box (with light + dark variants where applicable):
+
+- Catppuccin (Latte, Frappé, Macchiato, Mocha)
+- Tokyo Night, Tokyo Night Storm, Tokyo Night Light
+- Solarized Dark, Solarized Light
+- Nord
+- Dracula
+- Gruvbox Dark, Gruvbox Light
+- Rose Pine, Rose Pine Moon, Rose Pine Dawn
+- Everforest Dark, Everforest Light
+- pi-oven Default Dark, pi-oven Default Light
+
+Bundled themes live in [crates/pi-oven/assets/themes/](crates/pi-oven/assets/themes/) and are embedded at compile time via `include_str!`.
+
+### Custom themes
+
+Users drop additional `*.toml` files into `~/.pi-oven/themes/` on the **client**. The client merges them with the bundled set at startup; user files win on name collision. Theme list is exposed in the project-config picker.
+
+(Themes intentionally live client-side, not server-side — they're a visual preference for *your* eyes and the client owns rendering. The server only stores the *name* of the theme each project uses.)
+
+### Per-project assignment
+
+The project-config dialog (Add Project / Edit Project) shows a theme picker with **live preview as you arrow through options** — the whole window repaints in the candidate theme as you scroll. On save, the theme name is sent to the server (`AddProject` / `UpdateProject`) and persisted in the `projects.theme` column.
+
+`theme` may be `NULL` ("use global default"). Global default lives in client config at `~/.config/pi-oven/config.toml` — defaults to "pi-oven Default Dark", honours macOS appearance setting if the user opts in.
+
+### Switching mechanics
+
+When focus moves to a tab whose project has a different theme than the currently-painted one:
+
+1. Client looks up the new project's `theme` (carried in the `Project` payload it already has).
+2. Resolves to a loaded `Theme` struct (or falls back to global default if the named theme is missing — log warning).
+3. Updates the active theme uniform; next frame paints in the new colours.
+
+Same project → no change. Crossfade animation is **polish** (cheap with our wgpu pipeline; deferred to slice 9 unless trivial).
+
+### Wire protocol
+
+- `Project` payload gains `theme: string | null`.
+- `S→C ThemeUpdate { project_id, theme }` for live changes (e.g. you renamed a theme on the server side, or an admin edit). Client just updates its in-memory project state.
+
+### Renderer
+
+`render/paint.rs` holds an active `Theme` as a small uniform buffer. `Cell::fg`/`Cell::bg` are stored as `SemanticColor` enum values (`u8`-backed); the fragment shader (or CPU lookup table for the simple path) maps them to RGB via the theme uniform. This means:
+
+- Cell grid storage cost is unchanged (`Cell` stays a small POD struct).
+- Theme swap = one `queue.write_buffer` on the uniform + redraw. No pixel data is recomputed.
+- Adding new semantic colours is a coordinated change (palette enum + theme TOML schema + every theme file). Each addition is a future migration of bundled themes.
+
+### Future scope (deliberately out of v1)
+
+- **Repo-checked-in themes** (`.pi-oven/theme.toml` in the project repo) so a team can share a project's theme automatically — adds config-management surface; not needed for a single-user tool's first cut.
+- **Auto theme by macOS appearance** for the global default (light/dark switching with the OS) — small addition once everything else works.
+- **Hot-reload** when a custom theme file changes on disk — quality-of-life; v1 reads at startup and on theme-picker save.
+- **Font and typography in the theme bundle** — kept separate for now (font is a global config knob); themes are colour-only.
 
 ---
 
@@ -689,10 +785,11 @@ Even though the target is end-to-end, build in slices that each leave a working 
 3. **Image attachments** — clipboard paste (`cmd+V`) via `arboard`; client-side PNG normalisation + thumbnail render; binary-frame upload protocol; server-side staging (`attachments` table + `~/.pi-oven/attachments/`); multimodal hand-off to pi; inline image rendering in the conversation pane; per-workspace cleanup. **Lands here because pasting screenshots is the single workflow that currently forces dropping out of the TUI — fixing it early gets pi-oven into daily use sooner.**
 4. **New-workspace pickers** — Exploration → skill picker → spec picker → issue picker (in that order; each adds an external dependency: pi SDK skill listing → openspec scanner → tracker adapter).
 5. **Add-project flow** — local dir, local repo, clone-from-URL with target-path prompt; tracker config UI per-project; GIT_ASKPASS shim wired up; default-branch sync with warn-and-proceed.
-6. **Tracker event observability + merge cleanup** — tracker adapter PR methods (`createPullRequest`, `getPullRequest`, `listPullRequestChecks`, `deleteRemoteBranch`); webhook receiver with polling fallback; PR-merged detection drives auto-cleanup of the implementation workspace (worktree remove, remote branch delete, status closed). Agent-driven commit/push/PR-open flow works end-to-end against this.
-7. **Reviewer agent** — paired-workspace model (`origin_kind = 'review'`, `parent_workspace_id`); separate worktree on PR head; system seed + tracker write scope (comments only); review tab in the TUI; cleanup on reviewer-done signal.
-8. **Release branch flow** — per-project `release_branch` / `release_mode` / `release_required_checks`; manual "New release PR" affordance; auto-on-checks watcher reading tracker check results; same review/merge path as default-branch PRs.
-9. **Polish** — branch-sync warnings surfaced in UI, tool-warnings banner, error toasts, theme parity with the screenshot, config file, `fsck` admin command, release-status indicators in tabs.
+6. **Theming + per-project switch** — semantic-colour palette in the renderer (no literal RGB at the widget layer); bundled theme set (Catppuccin, Tokyo Night, Solarized, Nord, Dracula, Gruvbox, Rose Pine, Everforest, pi-oven Default light/dark); user theme directory; theme picker in the project-config dialog with live preview; auto-switch on tab focus when crossing project boundaries.
+7. **Tracker event observability + merge cleanup** — tracker adapter PR methods (`createPullRequest`, `getPullRequest`, `listPullRequestChecks`, `deleteRemoteBranch`); webhook receiver with polling fallback; PR-merged detection drives auto-cleanup of the implementation workspace (worktree remove, remote branch delete, status closed). Agent-driven commit/push/PR-open flow works end-to-end against this.
+8. **Reviewer agent** — paired-workspace model (`origin_kind = 'review'`, `parent_workspace_id`); separate worktree on PR head; system seed + tracker write scope (comments only); review tab in the TUI; cleanup on reviewer-done signal.
+9. **Release branch flow** — per-project `release_branch` / `release_mode` / `release_required_checks`; manual "New release PR" affordance; auto-on-checks watcher reading tracker check results; same review/merge path as default-branch PRs.
+10. **Polish** — branch-sync warnings surfaced in UI, tool-warnings banner, error toasts, theme crossfade animation, hot-reload of custom theme files, macOS appearance auto-switch, config file, `fsck` admin command, release-status indicators in tabs.
 
 This sequencing means image paste lands as early as slice 3 — you can start using pi-oven for real work (multi-workspace + screenshot paste) after that, with workflow niceties layering on after.
 
@@ -719,6 +816,8 @@ Run unit tests for: `default-branch.ts` (mocked git), tracker adapters (record/r
 
 12. **Image attachment round-trip**: take a screenshot (cmd+shift+4 in macOS), focus the pi-oven input bar, press cmd+V. Verify: thumbnail appears next to the input bar with byte size and "image/png", `~/.pi-oven/attachments/<workspace>/<id>.png` exists on the server with the right sha256, the `attachments` row is present. Type a message ("what does this image show?") and hit enter; verify the agent's response references the image content. Close the workspace (hard); verify the attachment file and DB row are removed.
 
+13. **Theme assignment and auto-switch**: open two projects, assign different themes (e.g. Tokyo Night Storm and Catppuccin Latte). Open one workspace per project. With workspace A focused, verify the UI is in project A's theme. Cmd+\` to switch to workspace B; verify the entire UI repaints in project B's theme on the next frame (sidebar, tabs, conversation, input bar, all colours change). Switch back; same in reverse. Verify it stays consistent across server restart (theme name persists in `projects.theme`). Drop a custom `*.toml` into `~/.pi-oven/themes/`, restart the client, confirm it appears in the project-config picker.
+
 ---
 
 ## Open items deliberately deferred
@@ -740,6 +839,9 @@ Run unit tests for: `default-branch.ts` (mocked git), tracker adapters (record/r
 - [crates/pi-oven/src/render/backend.rs](crates/pi-oven/src/render/backend.rs) — custom `ratatui::backend::Backend` writing to a cell grid
 - [crates/pi-oven/src/render/paint.rs](crates/pi-oven/src/render/paint.rs) — wgpu + glyphon paint pass
 - [crates/pi-oven/src/render/image.rs](crates/pi-oven/src/render/image.rs) — image-quad pass on top of the cell grid
+- [crates/pi-oven/src/render/theme.rs](crates/pi-oven/src/render/theme.rs) — `Theme` struct, `SemanticColor` enum, palette uniform, fallback resolution
+- [crates/pi-oven/src/themes.rs](crates/pi-oven/src/themes.rs) — bundled theme loader, user-theme directory scan, name → `Theme` lookup
+- [crates/pi-oven/assets/themes/](crates/pi-oven/assets/themes/) — bundled `*.toml` (Catppuccin, Tokyo Night, Solarized, Nord, Dracula, Gruvbox, Rose Pine, Everforest, pi-oven Default)
 - [crates/pi-oven/src/clipboard.rs](crates/pi-oven/src/clipboard.rs) — `arboard` wrapper, image detection, PNG normalisation
 - [crates/pi-oven/src/keys.rs](crates/pi-oven/src/keys.rs) — winit modifiers → semantic actions
 - [crates/pi-oven/src/net/codec.rs](crates/pi-oven/src/net/codec.rs) — must match `protocol.ts` exactly
