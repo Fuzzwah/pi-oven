@@ -1,2 +1,111 @@
 # pi-oven
-A TUI to manage multiple Pi Agent CLI sessions
+
+A direct client/server harness for running multiple [pi coding agent](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent) sessions in parallel across git worktrees, with a native macOS TUI client.
+
+> **Status:** pre-alpha. The runtime is being scaffolded under [openspec/changes/scaffold-runtime/](openspec/changes/scaffold-runtime/). Nothing builds yet.
+
+## Why use this?
+
+If you drive a pi (or any other coding agent) over SSH from a Mac, you've probably hit some of these:
+
+- **Hotkey theft.** macOS and your terminal eat `cmd+1`, `cmd+\``, `cmd+n` before they reach the TUI. pi-oven runs as a native `.app` that owns its window, so modifiers land where you want them.
+- **One agent at a time isn't enough.** You want issue #42 in one tab, yesterday's spec in another, an exploration on a third — each isolated. pi-oven gives every workspace its own worktree, branch, and pi session, switchable with `cmd+1..9`.
+- **Closing the laptop kills your work.** Agents run on the server, independent of the client. Close the lid, reopen later — the conversation pane replays the events you missed.
+- **Context-switching out of the TUI to commit, push, open PRs.** The agent does all of that as tool calls. You stay in one place from "let's start" through "ship it"; the worktree and remote branch are cleaned up automatically on merge.
+- **No second set of eyes.** Every PR gets a paired **reviewer agent** in its own tab that reads the diff and posts review comments via the tracker.
+
+It's deliberately single-user and self-hosted, leans on [OpenSpec](https://github.com/Fission-AI/OpenSpec) for feature proposals and your existing Forgejo / GitHub issues for bugs, and doesn't try to be its own task tracker.
+
+## Stack
+
+- **Client** — Rust native macOS app (`winit` + `wgpu` + `glyphon`, with `ratatui` via a custom backend writing into a cell grid). Packaged as a `.app` so cmd / option keys land in our event loop, not the host terminal's.
+- **Server** — Node 20 + TypeScript. Embeds the pi SDK in-process, manages git worktrees, talks to Forgejo / GitHub trackers, persists state in SQLite under `~/.pi-oven/`.
+- **Wire** — single WebSocket, JSON, shared-key auth.
+
+Full architecture and rationale: [docs/claude_plan.md](docs/claude_plan.md). Agent-session orientation: [AGENTS.md](AGENTS.md).
+
+## Workflow
+
+Every workspace is a tab in the TUI, a worktree on disk, and a `pi` agent session. The whole point is that you can run several in parallel — each agent in its own isolated branch — without losing track of any of them.
+
+### Starting a workspace
+
+When you create a new workspace (`cmd+n` on a project), pi-oven first syncs the project's default branch from its remote, then asks you to pick a **trigger** that primes the agent's context:
+
+- **Issue** — pick from open Forgejo / GitHub issues (filterable by assignee, labels, search). The branch becomes `issue-<n>-<slug>`; the agent gets the issue body and comments as initial context.
+- **Spec** — pick from OpenSpec changes with incomplete tasks (sorted by remaining-task count by default). The branch becomes `spec-<change-id>`; the agent gets the change's `proposal.md` and `tasks.md`.
+- **Skill** — pick from pi's available skills / prompt templates. The branch becomes `skill-<name>-<timestamp>`; the skill's prompt seeds the session.
+- **Exploration** — skip everything. The branch becomes `explore-<timestamp>` and the agent starts with no priming context. On your first message, it nudges you toward `/opsx:propose` or filing an issue.
+
+The new worktree is cut from an up-to-date default branch. If the local default can't be fast-forwarded from its remote (no remote configured, fetch failed, non-FF), pi-oven surfaces a warning in the conversation pane but still creates the worktree off the local default — work is never blocked by network or sync issues.
+
+### Working with the agent
+
+Inside a workspace you're talking to a normal `pi` session — slash commands, queued messages (`Enter` to steer, `Alt+Enter` to follow up, `Esc` to abort the current turn). The agent edits files in the worktree, runs tools, and commits incrementally as it goes.
+
+`cmd+1`…`cmd+9` jumps between tabs; `cmd+\`` and `cmd+shift+\`` cycle them. `cmd+w` closes the focused tab. Agents run in the server, independent of your client connection: you can close your laptop, reconnect later, and the conversation pane replays everything you missed.
+
+### Shipping the work
+
+When the work is ready ("ship it"), the **agent itself** drives the post-work flow:
+
+1. **Commit & push** — agent runs `git push -u origin <branch>`. HTTPS remotes use the project's tracker token via a `GIT_ASKPASS` shim; SSH remotes use the server's ssh-agent.
+2. **Open PR** — agent calls the tracker (`gh` for GitHub, `tea` for Forgejo) to open a pull request targeting the default branch. Title and body come from the seed context plus a diff summary.
+3. **Reviewer agent spawns** — pi-oven detects the new PR and creates a paired **review workspace** in its own tab: a separate worktree on the PR's head, a fresh `pi` session seeded with a "review the diff and post findings" prompt. The reviewer has tracker comment scope only — it cannot push or merge.
+4. **You review** — read the reviewer agent's comments alongside the diff in the tracker UI. Iterate by going back to the implementation workspace and steering the agent to fix things; commit and push happen automatically; a fresh reviewer can be triggered against the new head.
+5. **Merge** — merging is **always manual**, done in the tracker UI. This is the only step pi-oven deliberately doesn't automate.
+6. **Auto-cleanup** — once pi-oven sees the PR merged (webhook, polling fallback), it removes the worktree, deletes the remote branch as a safety-net, and closes both the implementation and review tabs.
+
+### Release branches (optional)
+
+A project can declare a release / production branch with its own promotion flow:
+
+- **Manual** — TUI exposes a "New release PR" affordance. Invoking it opens a `default → release` PR; the same review and merge flow applies, with optional required checks gating the merge.
+- **Auto on checks** — pi-oven watches the tracker for check results on `default`. When all required checks pass on a commit, it auto-opens (or auto-merges, configurable) the release PR.
+- **None** (default) — `default` is the only mainline.
+
+### Why agent-driven push and PR?
+
+Letting the agent commit, push, and open the PR keeps the conversational loop tight — "ship it" is the same UX as any other instruction, no context switching out of the TUI. Mitigations for the elevated trust:
+
+- Tokens are scoped per project; one project's compromise doesn't escalate to others.
+- Agents push only to their worktree's branch — never to `default` or `release_branch`.
+- The reviewer agent has comment-only scope on the tracker; it cannot push or merge.
+- Merge is the only step that crosses into shared state, and it's deliberately manual.
+
+## Layout
+
+```
+pi-oven/
+├── crates/pi-oven/              # Rust client, native macOS app    (TBD: scaffold-runtime)
+├── packages/pi-oven-server/     # Node/TS server                   (TBD: scaffold-runtime)
+├── docs/claude_plan.md          # Architecture plan, decisions, gotchas
+├── openspec/                    # OpenSpec changes & approved specs
+├── .claude/skills/              # OpenSpec skills for Claude Code
+├── .pi/skills/                  # OpenSpec skills for pi
+├── AGENTS.md                    # Orientation for agent sessions
+└── README.md                    # You are here
+```
+
+## Project conventions
+
+Every feature lands as an OpenSpec change. Bug fixes track issues on Forgejo / GitHub. From inside a `pi` or Claude session:
+
+- `/opsx:propose <description>` — scaffold a new change (proposal, design, specs, tasks)
+- `/opsx:apply` — implement the in-flight change task by task
+- `/opsx:archive` — archive a completed change once its specs are merged
+
+`openspec status` shows in-flight changes; `openspec status --change <name>` shows artifact progress.
+
+## Development
+
+Build commands will land with [scaffold-runtime](openspec/changes/scaffold-runtime/). The intended shape:
+
+- `cargo run -p pi-oven` — launch the client (opens a native macOS window)
+- `cargo bundle --release` — package the client as `pi-oven.app`
+- `pnpm --filter pi-oven-server dev` — run the server
+- `pnpm --filter pi-oven-server test` — server unit tests
+
+## License
+
+TBD.
