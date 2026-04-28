@@ -11,6 +11,7 @@ If you drive a pi (or any other coding agent) over SSH from a Mac, you've probab
 - **Hotkey theft.** macOS and your terminal eat `cmd+1`, `cmd+\``, `cmd+n` before they reach the TUI. pi-oven runs as a native `.app` that owns its window, so modifiers land where you want them.
 - **One agent at a time isn't enough.** You want issue #42 in one tab, yesterday's spec in another, an exploration on a third — each isolated. pi-oven gives every workspace its own worktree, branch, and pi session, switchable with `cmd+1..9`.
 - **Closing the laptop kills your work.** Agents run on the server, independent of the client. Close the lid, reopen later — the conversation pane replays the events you missed.
+- **Pasting a screenshot means leaving the TUI.** Sharing a UI bug, an error panel, or a design reference today means dropping into VS Code or another editor that handles clipboard images. pi-oven takes `cmd+V` directly: text pastes inline, images are staged as attachments and sent multimodally to the agent.
 - **Context-switching out of the TUI to commit, push, open PRs.** The agent does all of that as tool calls. You stay in one place from "let's start" through "ship it"; the worktree and remote branch are cleaned up automatically on merge.
 - **No second set of eyes.** Every PR gets a paired **reviewer agent** in its own tab that reads the diff and posts review comments via the tracker.
 
@@ -42,6 +43,8 @@ The new worktree is cut from an up-to-date default branch. If the local default 
 ### Working with the agent
 
 Inside a workspace you're talking to a normal `pi` session — slash commands, queued messages (`Enter` to steer, `Alt+Enter` to follow up, `Esc` to abort the current turn). The agent edits files in the worktree, runs tools, and commits incrementally as it goes.
+
+`cmd+V` in the input bar handles whatever's on the clipboard: text pastes inline, an image is staged as an attachment with a thumbnail next to the input bar, then sent multimodally when you hit Enter. Multiple images per message are supported. `cmd+shift+V` forces plain-text paste if you ever want to skip image detection.
 
 `cmd+1`…`cmd+9` jumps between tabs; `cmd+\`` and `cmd+shift+\`` cycle them. `cmd+w` closes the focused tab. Agents run in the server, independent of your client connection: you can close your laptop, reconnect later, and the conversation pane replays everything you missed.
 

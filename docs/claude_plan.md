@@ -179,6 +179,20 @@ CREATE TABLE settings (
 
 pi sessions themselves stay in pi's own `~/.pi/agent/sessions/`. We only store the path/id.
 
+A future migration adds the `attachments` table (lands with the image-attachment slice):
+
+```sql
+CREATE TABLE attachments (
+  id            TEXT PRIMARY KEY,             -- attachment_id (uuid)
+  workspace_id  INTEGER NOT NULL REFERENCES workspaces(id),
+  mime_type     TEXT NOT NULL,                -- 'image/png' for v1
+  byte_count    INTEGER NOT NULL,
+  sha256        TEXT NOT NULL,
+  path          TEXT NOT NULL,                -- absolute path on server
+  created_at    INTEGER NOT NULL
+);
+```
+
 ### Migration model
 
 - **Hand-rolled, forward-only.** No `down` migrations. Every fix is a new forward migration; rollback = stop server + restore backup.
@@ -268,10 +282,16 @@ Single tagged-union `Msg` type, mirrored in `protocol.ts` and `codec.rs`. Select
 - `S→C WorkspaceCreated { workspace }`
 
 **Active session**
-- `C→S Send { workspace_id, text, queue_mode: 'steer'|'followup' }`  (mirrors pi's Enter / Alt+Enter)
+- `C→S Send { workspace_id, text, queue_mode: 'steer'|'followup', attachment_ids?: string[] }`  (mirrors pi's Enter / Alt+Enter; attachments staged via the upload flow below)
 - `C→S Abort { workspace_id }`  (mirrors Escape)
 - `S→C AgentEvent { workspace_id, seq, event }`  (raw pi JSON event passthrough)
 - `S→C AgentStatus { workspace_id, status }`
+
+**Attachments (image paste / drag-drop)**
+- `C→S AttachmentUpload { upload_id, workspace_id, mime_type, byte_count, sha256 }`  (JSON, declares intent)
+- `S→C AttachmentReady { upload_id, ok: true } | { upload_id, ok: false, reason }`  (server reserves staging slot or rejects oversized / disallowed)
+- `C→S` **binary frame**: first 16 bytes = `upload_id` (UUID), remainder = raw image bytes (PNG normalised client-side)
+- `S→C AttachmentStored { upload_id, attachment_id, sha256 }`  (server-side validation passed; ID is now usable in `Send.attachment_ids`)
 
 **Reconnect / replay**
 - `C→S Resume { workspace_id, last_seq }` → `S→C ReplayBatch { events, latest_seq }`
@@ -402,6 +422,57 @@ Both backends expose equivalent issue and PR endpoints. The `Tracker` interface 
 
 ---
 
+## Image attachments
+
+### Why it matters
+
+Pasting a screenshot into the agent is the single workflow that currently forces context-switching out of the TUI into VS Code. Fixing it means we can stay in pi-oven for the whole loop — including "look at this UI bug" / "here's the error from the deploy panel" / "match this Figma frame" cases that are everyday work for a developer on a Mac.
+
+### End-to-end flow
+
+1. **Capture (client).** User presses `cmd+V` in the input bar. The Rust client reads the macOS clipboard via `arboard`. If it contains an image, the client normalises to PNG, computes sha256, generates an `upload_id` (UUID), and shows a thumbnail next to the input bar with a small "📎 1 image" indicator. If the clipboard is text, it pastes inline as usual.
+2. **Negotiate (client → server).** Client sends `AttachmentUpload { upload_id, workspace_id, mime_type: 'image/png', byte_count, sha256 }`. Server validates: workspace exists, byte_count under cap (5MB default; configurable), MIME on allowlist (`image/png` for v1). Replies `AttachmentReady { upload_id, ok }`.
+3. **Transfer (client → server).** Client sends a single binary WebSocket frame: 16 bytes `upload_id` followed by the PNG bytes. Server reassembles, verifies sha256, writes to disk at `~/.pi-oven/attachments/<workspace_id>/<attachment_id>.png`, inserts the `attachments` row, replies `AttachmentStored { upload_id, attachment_id, sha256 }`.
+4. **Send (client → server).** When the user hits Enter, client emits `Send { workspace_id, text, queue_mode, attachment_ids: [<id>...] }`. Multiple attachments per message are supported.
+5. **Hand off to pi (server).** Server resolves each `attachment_id` → file path, reads the bytes, and calls the pi SDK's multimodal-content API. Exact shape depends on what pi exposes (see SDK spike below); the standard Anthropic shape — content blocks of `{ type: 'text' }` plus `{ type: 'image', source: { type: 'base64', media_type, data } }` — is the working assumption.
+6. **Render in conversation pane.** Client renders the image inline as part of the user-message turn: text first, then a thumbnail (max ~12 grid rows tall, aspect-preserving) painted as a wgpu textured quad over the cell grid. Cmd+click opens a full-size overlay viewer that closes on Esc.
+
+### Why a separate upload step instead of inlining base64 in `Send`?
+
+- Most screenshots are 500KB–3MB. Inlining as base64 in JSON inflates by ~33% and wastes the JSON path on raw binary.
+- Binary WebSocket frames carry the bytes natively; no codec overhead.
+- Decouples large-blob transfer from the tight `Send` event loop — a slow upload doesn't block other messages.
+- Server can validate the image (size, MIME, sha256, optional re-encode) before the user actually sends it. Rejection happens at upload-time, not at agent-handoff-time.
+
+### Server-side staging
+
+- Path: `~/.pi-oven/attachments/<workspace_id>/<attachment_id>.png`. Workspace-scoped to keep cleanup simple.
+- Limits: 5MB per attachment (configurable); 5 attachments per message; 50MB total per workspace (loose cap surfaced as a warning, not a hard block).
+- Lifecycle: attachments are tied to their workspace. On `hard` workspace close, the directory is `rm -rf`'d alongside the worktree. On `soft` close, attachments persist for resume. Daily janitor sweep: delete attachments belonging to closed workspaces older than 14 days.
+- File mode `0600`; directory mode `0700`. Token-grade material isn't in attachments, but defence-in-depth.
+
+### Client renderer
+
+- Image regions are a separate paint pass after the text grid: the renderer paints text first, then composes textured quads on top at pixel coordinates derived from a "claim" the conversation widget made when laying out the message (essentially: "rows 14-25, columns 0-40 of the conversation pane are occupied by image quad #7"). The cell grid stores a sentinel `Cell::ImagePlaceholder(image_id)` so layout is consistent.
+- Decoding: `image` crate (PNG decode) → `wgpu::Texture` → cached by `attachment_id`. Cache evicted on workspace close.
+- Thumbnails use linear filtering for downscale; full-size overlay uses nearest-neighbour above 1.0 zoom.
+
+### Hard dependency: pi SDK multimodal support
+
+This whole feature requires that the pi SDK accepts image content blocks alongside text in `session.queue` (or whatever the equivalent multimodal API is). **This is added to the slice-0 SDK spike.** If pi doesn't yet support multimodal:
+- Best path: send a PR upstream to pi-mono adding multimodal support — it's a thin layer over the LLM SDKs that already do.
+- Stopgap: server falls back to bypassing the SDK for the multimodal call, hitting the underlying LLM provider directly with the same auth pi uses. Documented as fragile.
+- Worst case: defer the slice until pi adds it. Slice 0's findings determine which path applies.
+
+### Future scope (deliberately out of v1)
+
+- Region capture from inside pi-oven (`cmd+shift+4`-equivalent invoking macOS's native capture and routing the result into the input bar).
+- Drag-drop support for image files onto the window.
+- Server-side OCR / image preprocessing.
+- Non-image attachments (PDFs, code archives) — would want different UX and a richer pipeline.
+
+---
+
 ## Keybindings (client)
 
 Captured by `keys.rs`; macOS-native so terminal app no longer competes:
@@ -414,7 +485,9 @@ Captured by `keys.rs`; macOS-native so terminal app no longer competes:
 | `cmd+n` | New workspace in selected project |
 | `cmd+shift+n` | New project |
 | `cmd+w` | Close current workspace |
-| `enter` (input bar) | Send / steer (pi's Enter behavior) |
+| `cmd+v` (input bar) | Paste from clipboard — text inline, image staged as attachment |
+| `cmd+shift+v` (input bar) | Paste plain text only (skip image detection) |
+| `enter` (input bar) | Send / steer (pi's Enter behavior) — includes any staged attachments |
 | `alt+enter` (input bar) | Send as follow-up (pi's Alt+Enter) |
 | `esc` (during agent run) | Abort current turn |
 
@@ -528,7 +601,7 @@ PRAGMA temp_store = MEMORY;
 **Why it bites:** pi owns its own session files. We make assumptions about session ids, resumption, and what happens when pi crashes.
 
 **v1 plan:**
-- A spike task in slice 1: read pi's SDK source under `packages/coding-agent` to confirm: (a) session-resume API surface, (b) what an SDK-level error looks like, (c) whether multiple sessions in one Node process share state. Capture findings in [docs/pi-sdk-notes.md](docs/pi-sdk-notes.md).
+- A spike task in slice 0: read pi's SDK source under `packages/coding-agent` to confirm: (a) session-resume API surface, (b) what an SDK-level error looks like, (c) whether multiple sessions in one Node process share state, (d) **multimodal-content API — does `session.queue` (or equivalent) accept image content blocks alongside text?** This last one is a hard dependency for the image-attachment slice; if pi doesn't support it yet, the spike's output decides whether we PR upstream, fall back to the underlying LLM SDK, or defer the feature. Capture findings in [docs/pi-sdk-notes.md](docs/pi-sdk-notes.md).
 - Default behavior: never delete pi's session files; we treat them as authoritative for agent memory. Closing a workspace just closes our handle.
 - Pin `@mariozechner/pi-coding-agent` exactly in [packages/pi-oven-server/package.json](packages/pi-oven-server/package.json); upgrade is a deliberate PR.
 
@@ -610,17 +683,18 @@ PRAGMA temp_store = MEMORY;
 
 Even though the target is end-to-end, build in slices that each leave a working app. Each slice is shippable on its own.
 
-0. **Foundations (de-risk first)** — pi SDK spike (verify resume API, error semantics, multi-session safety) → notes in [docs/pi-sdk-notes.md](docs/pi-sdk-notes.md); winit + wgpu + glyphon + ratatui-custom-backend prototype that renders "hello world" in a window and reports cmd+1 / opt+\` / cmd+n events; toolchain manifest + bootstrap script. These three are the highest-uncertainty pieces; cheaper to validate before the rest of the architecture commits to them.
+0. **Foundations (de-risk first)** — pi SDK spike (verify resume API, error semantics, multi-session safety, **and multimodal-content API for image attachments**) → notes in [docs/pi-sdk-notes.md](docs/pi-sdk-notes.md); winit + wgpu + glyphon + ratatui-custom-backend prototype that renders "hello world" in a window and reports cmd+1 / opt+\` / cmd+n events; toolchain manifest + bootstrap script. These are the highest-uncertainty pieces; cheaper to validate before the rest of the architecture commits to them.
 1. **Skeleton** — Cargo + pnpm scaffolding, single-instance lock, SQLite + migration runner with `0001_initial.sql`, structured logging, WebSocket handshake with shared key + Origin policy, frame heartbeat, render the same panes (empty), single hard-coded workspace with pi SDK round-trip and event log written to NDJSON.
 2. **Multi-workspace + tabs** — `WorkspaceManager`, tabs UI, hotkeys, eager re-attach on startup, replay-on-reconnect against the NDJSON log, worktree orphan cleanup.
-3. **New-workspace pickers** — Exploration → skill picker → spec picker → issue picker (in that order; each adds an external dependency: pi SDK skill listing → openspec scanner → tracker adapter).
-4. **Add-project flow** — local dir, local repo, clone-from-URL with target-path prompt; tracker config UI per-project; GIT_ASKPASS shim wired up; default-branch sync with warn-and-proceed.
-5. **Tracker event observability + merge cleanup** — tracker adapter PR methods (`createPullRequest`, `getPullRequest`, `listPullRequestChecks`, `deleteRemoteBranch`); webhook receiver with polling fallback; PR-merged detection drives auto-cleanup of the implementation workspace (worktree remove, remote branch delete, status closed). Agent-driven commit/push/PR-open flow works end-to-end against this.
-6. **Reviewer agent** — paired-workspace model (`origin_kind = 'review'`, `parent_workspace_id`); separate worktree on PR head; system seed + tracker write scope (comments only); review tab in the TUI; cleanup on reviewer-done signal.
-7. **Release branch flow** — per-project `release_branch` / `release_mode` / `release_required_checks`; manual "New release PR" affordance; auto-on-checks watcher reading tracker check results; same review/merge path as default-branch PRs.
-8. **Polish** — branch-sync warnings surfaced in UI, tool-warnings banner, error toasts, theme parity with the screenshot, config file, `fsck` admin command, release-status indicators in tabs.
+3. **Image attachments** — clipboard paste (`cmd+V`) via `arboard`; client-side PNG normalisation + thumbnail render; binary-frame upload protocol; server-side staging (`attachments` table + `~/.pi-oven/attachments/`); multimodal hand-off to pi; inline image rendering in the conversation pane; per-workspace cleanup. **Lands here because pasting screenshots is the single workflow that currently forces dropping out of the TUI — fixing it early gets pi-oven into daily use sooner.**
+4. **New-workspace pickers** — Exploration → skill picker → spec picker → issue picker (in that order; each adds an external dependency: pi SDK skill listing → openspec scanner → tracker adapter).
+5. **Add-project flow** — local dir, local repo, clone-from-URL with target-path prompt; tracker config UI per-project; GIT_ASKPASS shim wired up; default-branch sync with warn-and-proceed.
+6. **Tracker event observability + merge cleanup** — tracker adapter PR methods (`createPullRequest`, `getPullRequest`, `listPullRequestChecks`, `deleteRemoteBranch`); webhook receiver with polling fallback; PR-merged detection drives auto-cleanup of the implementation workspace (worktree remove, remote branch delete, status closed). Agent-driven commit/push/PR-open flow works end-to-end against this.
+7. **Reviewer agent** — paired-workspace model (`origin_kind = 'review'`, `parent_workspace_id`); separate worktree on PR head; system seed + tracker write scope (comments only); review tab in the TUI; cleanup on reviewer-done signal.
+8. **Release branch flow** — per-project `release_branch` / `release_mode` / `release_required_checks`; manual "New release PR" affordance; auto-on-checks watcher reading tracker check results; same review/merge path as default-branch PRs.
+9. **Polish** — branch-sync warnings surfaced in UI, tool-warnings banner, error toasts, theme parity with the screenshot, config file, `fsck` admin command, release-status indicators in tabs.
 
-This sequencing also lets you start using it for real work after slice 2.
+This sequencing means image paste lands as early as slice 3 — you can start using pi-oven for real work (multi-workspace + screenshot paste) after that, with workflow niceties layering on after.
 
 ---
 
@@ -643,6 +717,8 @@ Run unit tests for: `default-branch.ts` (mocked git), tracker adapters (record/r
 
 11. **Migration upgrade smoke**: from a freshly-built `state.db`, drop a sentinel new migration in `migrations/` (e.g. `0002_add_workspace_label.sql` adding a `label TEXT` column with default), restart the server. Verify: a `state.db.bak.<ts>` was created, the new column exists, `_migrations` shows two rows, second startup is a no-op (no new backup).
 
+12. **Image attachment round-trip**: take a screenshot (cmd+shift+4 in macOS), focus the pi-oven input bar, press cmd+V. Verify: thumbnail appears next to the input bar with byte size and "image/png", `~/.pi-oven/attachments/<workspace>/<id>.png` exists on the server with the right sha256, the `attachments` row is present. Type a message ("what does this image show?") and hit enter; verify the agent's response references the image content. Close the workspace (hard); verify the attachment file and DB row are removed.
+
 ---
 
 ## Open items deliberately deferred
@@ -663,6 +739,8 @@ Run unit tests for: `default-branch.ts` (mocked git), tracker adapters (record/r
 - [crates/pi-oven/src/main.rs](crates/pi-oven/src/main.rs) — winit event loop entry
 - [crates/pi-oven/src/render/backend.rs](crates/pi-oven/src/render/backend.rs) — custom `ratatui::backend::Backend` writing to a cell grid
 - [crates/pi-oven/src/render/paint.rs](crates/pi-oven/src/render/paint.rs) — wgpu + glyphon paint pass
+- [crates/pi-oven/src/render/image.rs](crates/pi-oven/src/render/image.rs) — image-quad pass on top of the cell grid
+- [crates/pi-oven/src/clipboard.rs](crates/pi-oven/src/clipboard.rs) — `arboard` wrapper, image detection, PNG normalisation
 - [crates/pi-oven/src/keys.rs](crates/pi-oven/src/keys.rs) — winit modifiers → semantic actions
 - [crates/pi-oven/src/net/codec.rs](crates/pi-oven/src/net/codec.rs) — must match `protocol.ts` exactly
 - [crates/pi-oven/src/ui/](crates/pi-oven/src/ui/) — sidebar, tabs, conversation, input, pickers
@@ -689,6 +767,7 @@ Run unit tests for: `default-branch.ts` (mocked git), tracker adapters (record/r
 - [packages/pi-oven-server/src/state/db.ts](packages/pi-oven-server/src/state/db.ts) — pragmas + migrate() on open
 - [packages/pi-oven-server/src/state/migrate.ts](packages/pi-oven-server/src/state/migrate.ts)
 - [packages/pi-oven-server/src/state/migrations/0001_initial.sql](packages/pi-oven-server/src/state/migrations/0001_initial.sql)
+- [packages/pi-oven-server/src/attachments/manager.ts](packages/pi-oven-server/src/attachments/manager.ts) — staging, validation, lifecycle, multimodal hand-off to pi
 - [packages/pi-oven-server/src/admin/fsck.ts](packages/pi-oven-server/src/admin/fsck.ts)
 - [packages/pi-oven-server/scripts/bootstrap.sh](packages/pi-oven-server/scripts/bootstrap.sh)
 - [packages/pi-oven-server/scripts/tools.manifest.json](packages/pi-oven-server/scripts/tools.manifest.json)
