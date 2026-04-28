@@ -115,15 +115,52 @@ Every feature lands as an OpenSpec change. Bug fixes track issues on Forgejo / G
 - **Rust** stable (install via [rustup](https://rustup.rs/)).
 - **Node.js** 20+.
 - **pnpm** — version pinned via the root `package.json` `packageManager` field; enable with `corepack enable`.
+- **`lld` linker** — `brew install llvm` provides it. The repo's [.cargo/config.toml](.cargo/config.toml) wires it in via `-fuse-ld=lld` for `aarch64-apple-darwin` and `x86_64-apple-darwin`; saves 1–3s per incremental link.
+- **cargo-watch** — `cargo install cargo-watch` for the recommended tight-loop dev workflow.
 - **cargo-bundle** — for producing the macOS `.app`. Install with `cargo install cargo-bundle`.
+
+### Client crates
+
+The client is split into five workspace members under [crates/](crates/):
+
+- `pi-oven-protocol` — wire types shared across the UI, networking, and (eventually) server bindings.
+- `pi-oven-render` — cell grid, custom `ratatui::backend::Backend`, wgpu + glyphon paint pipeline.
+- `pi-oven-ui` — ratatui widgets and layouts, written against the generic `Backend` trait so they're backend-agnostic.
+- `pi-oven-net` — WebSocket client and reconnect/replay logic.
+- `pi-oven` — the binary; main, app shell, key dispatch, clipboard, theme loader.
+
+The split exists so a UI tweak rebuilds one library plus the binary, not the entire wgpu pipeline.
+
+### Client feature flags
+
+The `pi-oven` binary exposes two mutually-exclusive feature flags:
+
+- `dev-wgpu` (**default**) — native macOS rendering: a winit window driven by `pi-oven-render`'s wgpu/glyphon paint pipeline. Required to validate cmd / option modifier-key capture.
+- `dev-crossterm` — terminal-based ratatui rendering via `ratatui::backend::CrosstermBackend`. Useful for fast iteration on widget code that doesn't need to test modifier handling.
 
 ### Client (Rust, macOS)
 
 ```bash
-cargo run -p pi-oven           # launch the unbundled client (opens a native macOS window)
-cargo bundle --release         # package the client as pi-oven.app under target/release/bundle/osx/
-RUST_LOG=debug cargo run -p pi-oven   # verbose logging (useful for inspecting cmd/option key events)
+cargo run -p pi-oven                                                # default: native window via dev-wgpu
+RUST_LOG=debug cargo run -p pi-oven                                 # verbose logging (useful for cmd/option key events)
+cargo run -p pi-oven --no-default-features --features dev-crossterm # terminal-based ratatui for fast widget iteration
+cargo bundle --release                                              # package as pi-oven.app under target/release/bundle/osx/
 ```
+
+### Recommended dev loop
+
+Two terminals:
+
+```bash
+# terminal 1 — fast type-check feedback on whichever crate you're editing
+cargo watch -x 'check -p pi-oven-ui'
+
+# terminal 2 — actual launches
+cargo run -p pi-oven                                                 # native window
+cargo run -p pi-oven --no-default-features --features dev-crossterm  # terminal UI
+```
+
+Edits to `pi-oven-ui` or `pi-oven` only recompile those two crates — the renderer (heavy GPU code) and networking crates stay cached.
 
 ### Server (Node/TS)
 

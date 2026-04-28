@@ -1,0 +1,53 @@
+[package]
+name = "pi-oven"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "pi-oven"
+path = "src/main.rs"
+
+[features]
+default = ["dev-wgpu"]
+
+# Native macOS rendering: winit window + wgpu/glyphon paint via `pi-oven-render`.
+# This is the production-shaped path and is required to validate macOS
+# cmd/option key capture.
+dev-wgpu = ["dep:pi-oven-render", "dep:winit", "dep:wgpu", "dep:pollster"]
+
+# Terminal-based ratatui rendering for fast iteration on widget code that does
+# not need to validate modifier-key handling. Mutually exclusive with
+# `dev-wgpu` — see the `compile_error!` in main.rs.
+dev-crossterm = ["ratatui/crossterm"]
+
+[dependencies]
+pi-oven-protocol = { path = "../pi-oven-protocol" }
+pi-oven-ui = { path = "../pi-oven-ui" }
+pi-oven-net = { path = "../pi-oven-net" }
+pi-oven-render = { path = "../pi-oven-render", optional = true }
+
+ratatui = { version = "0.29", default-features = false }
+winit = { version = "0.30", optional = true }
+wgpu = { version = "22", optional = true }
+pollster = { version = "0.3", optional = true }
+
+clap = { version = "4", features = ["derive"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
+arboard = "3"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+anyhow = "1"
+
+[package.metadata.bundle]
+identifier = "dev.fuzzwah.pi-oven"
+name = "pi-oven"
+category = "public.app-category.developer-tools"
+short_description = "Native macOS client for the pi coding agent."
+long_description = """
+pi-oven is a native macOS client for the pi coding agent. It owns its own
+window so cmd/option keys land in our event loop instead of being intercepted
+by the host terminal.
+"""
+icon = ["assets/icon.png"]
+copyright = "Copyright (c) 2026 Rob Crouch"

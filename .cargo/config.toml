@@ -1,0 +1,11 @@
+# Use lld for faster incremental links on macOS. Saves 1-3s per relink on the
+# typical edit-rebuild loop. Requires `brew install llvm` (which provides lld).
+# See README's Development section.
+
+[target.aarch64-apple-darwin]
+linker = "clang"
+rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+
+[target.x86_64-apple-darwin]
+linker = "clang"
+rustflags = ["-C", "link-arg=-fuse-ld=lld"]

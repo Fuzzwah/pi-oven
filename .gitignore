@@ -1,0 +1,14 @@
+# Rust
+target/
+
+# Node
+node_modules/
+dist/
+*.log
+
+# macOS
+.DS_Store
+
+# Editor / IDE — per-user, not project-shared
+.vscode/
+.idea/
