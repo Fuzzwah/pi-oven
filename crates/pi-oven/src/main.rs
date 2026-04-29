@@ -294,25 +294,50 @@ mod wgpu_main {
                 _ => {}
             }
 
-            // Text input: key press with no Cmd/Ctrl modifier.
-            if ev.state.is_pressed()
-                && !self.modifiers.super_key()
-                && !self.modifiers.control_key()
-            {
-                let changed = match &ev.logical_key {
-                    Key::Named(NamedKey::Backspace) => self.app_state.input.pop().is_some(),
-                    _ => match ev.text.as_deref() {
-                        Some(s) if !s.is_empty() => {
-                            self.app_state.input.push_str(s);
-                            true
-                        }
-                        _ => false,
-                    },
-                };
-                if changed {
-                    self.reset_blink();
-                    self.redraw();
+            if !ev.state.is_pressed() {
+                return;
+            }
+
+            let shift = self.modifiers.shift_key();
+            let alt = self.modifiers.alt_key();
+            let cmd = self.modifiers.super_key();
+            let ctrl = self.modifiers.control_key();
+
+            let changed = match &ev.logical_key {
+                Key::Named(NamedKey::Backspace) => {
+                    if cmd { self.app_state.editor.delete_to_start(); }
+                    else if alt { self.app_state.editor.delete_word_before(); }
+                    else { self.app_state.editor.delete_before(); }
+                    true
                 }
+                Key::Named(NamedKey::Delete) => {
+                    self.app_state.editor.delete_after();
+                    true
+                }
+                Key::Named(NamedKey::ArrowLeft) => {
+                    if cmd { self.app_state.editor.move_to_start(shift); }
+                    else if alt { self.app_state.editor.move_word_left(shift); }
+                    else { self.app_state.editor.move_left(shift); }
+                    true
+                }
+                Key::Named(NamedKey::ArrowRight) => {
+                    if cmd { self.app_state.editor.move_to_end(shift); }
+                    else if alt { self.app_state.editor.move_word_right(shift); }
+                    else { self.app_state.editor.move_right(shift); }
+                    true
+                }
+                _ if !cmd && !ctrl => match ev.text.as_deref() {
+                    Some(s) if !s.is_empty() => {
+                        self.app_state.editor.push_str(s);
+                        true
+                    }
+                    _ => false,
+                },
+                _ => false,
+            };
+            if changed {
+                self.reset_blink();
+                self.redraw();
             }
         }
 
@@ -376,8 +401,14 @@ mod crossterm_main {
                         if k.kind == KeyEventKind::Press {
                             match k.code {
                                 KeyCode::Esc => break,
-                                KeyCode::Backspace => { app_state.input.pop(); }
-                                KeyCode::Char(c) => app_state.input.push(c),
+                                KeyCode::Backspace => { app_state.editor.delete_before(); }
+                                KeyCode::Delete => { app_state.editor.delete_after(); }
+                                KeyCode::Left => { app_state.editor.move_left(false); }
+                                KeyCode::Right => { app_state.editor.move_right(false); }
+                                KeyCode::Char(c) => {
+                                    let mut buf = [0u8; 4];
+                                    app_state.editor.push_str(c.encode_utf8(&mut buf));
+                                }
                                 _ => {}
                             }
                         }

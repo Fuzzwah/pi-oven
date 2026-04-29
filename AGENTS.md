@@ -57,6 +57,7 @@ Compile time is the dominant friction in client work; treat it as a first-class 
 - **Every feature is an OpenSpec change.** Use `/opsx:propose <description>` to start one. Don't commit code outside an active change.
 - **One change per slice.** Don't bundle multiple capabilities; they archive together and become hard to reason about.
 - **Don't pre-write proposals for unbuilt slices.** Proposals capture *current* understanding; pre-writing produces stale fiction. Only the next slice should be in-flight.
+- **Always sync specs when archiving.** When `/opsx:archive` asks about delta spec sync, always choose "Sync now". Delta specs are the source of truth for capability requirements; skipping sync leaves `openspec/specs/` stale.
 - **Forward-only migrations.** Never edit a migration after it has been applied to a real DB — the runner verifies SHA-256 checksums and refuses to start on tampering. Add a *new* forward migration to fix mistakes.
 - **One concern per migration file.** Rename + new column = two migrations.
 - **Numbered prefixes.** `0001_initial.sql`, `0002_add_x.sql`, … lexicographic order is execution order.

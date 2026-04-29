@@ -3,11 +3,13 @@
 //! both `dev-wgpu` (cell grid + glyphon) and `dev-crossterm` (terminal).
 
 mod conversation;
+mod editor;
 mod input;
 mod sidebar;
 mod tabs;
 
 pub use conversation::render_conversation;
+pub use editor::InputEditor;
 pub use input::render_input;
 pub use sidebar::render_sidebar;
 pub use tabs::render_tabs;
@@ -17,15 +19,14 @@ use ratatui::Frame;
 
 /// Application state passed into every render call.
 pub struct AppState {
-    /// Current contents of the input bar.
-    pub input: String,
+    pub editor: InputEditor,
     /// Whether the cursor is in its "on" phase of the blink cycle.
     pub cursor_visible: bool,
 }
 
 impl Default for AppState {
     fn default() -> Self {
-        Self { input: String::new(), cursor_visible: true }
+        Self { editor: InputEditor::default(), cursor_visible: true }
     }
 }
 
@@ -44,5 +45,5 @@ pub fn render(frame: &mut Frame, state: &AppState) {
     render_sidebar(sidebar_area, buf);
     render_tabs(tabs_area, buf);
     render_conversation(conversation_area, buf);
-    render_input(input_area, buf, &state.input, state.cursor_visible);
+    render_input(input_area, buf, &state.editor, state.cursor_visible);
 }
