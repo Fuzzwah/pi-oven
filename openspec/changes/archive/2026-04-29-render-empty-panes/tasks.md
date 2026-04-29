@@ -33,6 +33,6 @@
 ## 5. Documentation & manual verification
 
 - [x] 5.1 Update [README.md](README.md) Development section to note that `cargo run -p pi-oven` now opens a window with four pane shells (instead of a single `pi-oven` line).
-- [ ] 5.2 Manual verification: `cargo run -p pi-oven` opens the native window; the four labelled panes are visible at the default 1280×800 size; resizing the window keeps the sidebar at 28 cols and the input/tab bars at 3 rows each; the conversation pane absorbs the change.
-- [ ] 5.3 Manual verification: `cargo run -p pi-oven --no-default-features --features dev-crossterm` shows the same layout in the host terminal; pressing `q` or `Esc` exits cleanly.
-- [ ] 5.4 Manual verification: `Cmd+W` still quits the wgpu build (regression check on the existing key handler).
+- [x] 5.2 Manual verification: `cargo run -p pi-oven` opens the native window; the four labelled panes are visible at the default 1280×800 size; resizing the window keeps the sidebar at 28 cols and the input/tab bars at 3 rows each; the conversation pane absorbs the change.
+- [x] 5.3 Manual verification: `cargo run -p pi-oven --no-default-features --features dev-crossterm` shows the same layout in the host terminal; pressing `q` or `Esc` exits cleanly.
+- [x] 5.4 Manual verification: `Cmd+W` still quits the wgpu build (regression check on the existing key handler).
