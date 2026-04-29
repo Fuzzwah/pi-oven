@@ -337,9 +337,43 @@ mod wgpu_main {
                 "keyboard event"
             );
             match action {
-                KeyAction::CmdW => { event_loop.exit(); return; }
                 KeyAction::CmdEqual => { self.adjust_font_size(FONT_SIZE_STEP); return; }
                 KeyAction::CmdMinus => { self.adjust_font_size(-FONT_SIZE_STEP); return; }
+                KeyAction::CmdLetter('q') => { event_loop.exit(); return; }
+                KeyAction::CmdLetter('c') => {
+                    if let Some(text) = self.app_state.editor.selected_text() {
+                        match arboard::Clipboard::new().and_then(|mut cb| cb.set_text(text)) {
+                            Ok(()) => {}
+                            Err(e) => tracing::warn!(?e, "clipboard copy failed"),
+                        }
+                    }
+                    return;
+                }
+                KeyAction::CmdLetter('x') => {
+                    if let Some(text) = self.app_state.editor.selected_text() {
+                        match arboard::Clipboard::new().and_then(|mut cb| cb.set_text(text)) {
+                            Ok(()) => {}
+                            Err(e) => tracing::warn!(?e, "clipboard cut failed"),
+                        }
+                        self.app_state.editor.delete_selection();
+                        self.reset_blink();
+                        self.redraw();
+                    }
+                    return;
+                }
+                KeyAction::CmdLetter('v') => {
+                    match arboard::Clipboard::new().and_then(|mut cb| cb.get_text()) {
+                        Ok(text) if !text.is_empty() => {
+                            self.app_state.editor.delete_selection();
+                            self.app_state.editor.push_str(&text);
+                            self.reset_blink();
+                            self.redraw();
+                        }
+                        Ok(_) => {}
+                        Err(e) => tracing::warn!(?e, "clipboard paste failed"),
+                    }
+                    return;
+                }
                 _ => {}
             }
 
@@ -375,13 +409,18 @@ mod wgpu_main {
                     else { self.app_state.editor.move_right(shift); }
                     true
                 }
-                _ if !cmd && !ctrl => match ev.text.as_deref() {
-                    Some(s) if !s.is_empty() => {
-                        self.app_state.editor.push_str(s);
-                        true
+                _ if !cmd && !ctrl => {
+                    let s = ev.text.as_deref()
+                        .filter(|s| !s.is_empty())
+                        .or_else(|| match &ev.logical_key {
+                            Key::Character(s) => Some(s.as_str()),
+                            _ => None,
+                        });
+                    match s {
+                        Some(s) => { self.app_state.editor.push_str(s); true }
+                        None => false,
                     }
-                    _ => false,
-                },
+                }
                 _ => false,
             };
             if changed {
@@ -432,7 +471,7 @@ mod wgpu_main {
 mod crossterm_main {
     use anyhow::Result;
     use ratatui::backend::CrosstermBackend;
-    use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
+    use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
     use ratatui::crossterm::{
         execute,
         terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
@@ -458,13 +497,40 @@ mod crossterm_main {
                 if event::poll(Duration::from_millis(16))? {
                     if let Event::Key(k) = event::read()? {
                         if k.kind == KeyEventKind::Press {
-                            match k.code {
-                                KeyCode::Esc => break,
-                                KeyCode::Backspace => { app_state.editor.delete_before(); }
-                                KeyCode::Delete => { app_state.editor.delete_after(); }
-                                KeyCode::Left => { app_state.editor.move_left(false); }
-                                KeyCode::Right => { app_state.editor.move_right(false); }
-                                KeyCode::Char(c) => {
+                            match (k.code, k.modifiers) {
+                                (KeyCode::Esc, _) => break,
+                                (KeyCode::Backspace, _) => { app_state.editor.delete_before(); }
+                                (KeyCode::Delete, _) => { app_state.editor.delete_after(); }
+                                (KeyCode::Left, _) => { app_state.editor.move_left(false); }
+                                (KeyCode::Right, _) => { app_state.editor.move_right(false); }
+                                (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL) => {
+                                    if let Some(text) = app_state.editor.selected_text() {
+                                        match arboard::Clipboard::new().and_then(|mut cb| cb.set_text(text)) {
+                                            Ok(()) => {}
+                                            Err(e) => tracing::warn!(?e, "clipboard copy failed"),
+                                        }
+                                    }
+                                }
+                                (KeyCode::Char('x'), m) if m.contains(KeyModifiers::CONTROL) => {
+                                    if let Some(text) = app_state.editor.selected_text() {
+                                        match arboard::Clipboard::new().and_then(|mut cb| cb.set_text(text)) {
+                                            Ok(()) => {}
+                                            Err(e) => tracing::warn!(?e, "clipboard cut failed"),
+                                        }
+                                        app_state.editor.delete_selection();
+                                    }
+                                }
+                                (KeyCode::Char('v'), m) if m.contains(KeyModifiers::CONTROL) => {
+                                    match arboard::Clipboard::new().and_then(|mut cb| cb.get_text()) {
+                                        Ok(text) if !text.is_empty() => {
+                                            app_state.editor.delete_selection();
+                                            app_state.editor.push_str(&text);
+                                        }
+                                        Ok(_) => {}
+                                        Err(e) => tracing::warn!(?e, "clipboard paste failed"),
+                                    }
+                                }
+                                (KeyCode::Char(c), _) => {
                                     let mut buf = [0u8; 4];
                                     app_state.editor.push_str(c.encode_utf8(&mut buf));
                                 }

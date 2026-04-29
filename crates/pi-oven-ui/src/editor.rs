@@ -179,6 +179,18 @@ impl InputEditor {
         self.anchor = None;
     }
 
+    pub fn selected_text(&self) -> Option<String> {
+        self.selection().map(|(start, end)| self.buf[start..end].to_string())
+    }
+
+    pub fn delete_selection(&mut self) {
+        if let Some((start, end)) = self.selection() {
+            self.buf.drain(start..end);
+            self.cursor = start;
+            self.anchor = None;
+        }
+    }
+
     fn clamp_to_char_boundary(&self, pos: usize) -> usize {
         let len = self.buf.len();
         if pos >= len {
@@ -617,5 +629,59 @@ mod tests {
         let mut ed = InputEditor::default();
         ed.push_str("abc");
         assert_eq!(ed.selection(), None);
+    }
+
+    // ── 2.10 selected_text() ──────────────────────────────────────────────────
+
+    #[test]
+    fn selected_text_returns_selected_bytes() {
+        let mut ed = InputEditor::default();
+        ed.push_str("hello");
+        ed.move_to_start(false);
+        ed.move_right(true);
+        ed.move_right(true); // select "he"
+        assert_eq!(ed.selected_text(), Some("he".to_string()));
+    }
+
+    #[test]
+    fn selected_text_reverse_selection_returns_same_content() {
+        let mut ed = InputEditor::default();
+        ed.push_str("hello");
+        // select "lo" backwards: cursor goes left from end
+        ed.move_left(true);
+        ed.move_left(true); // anchor=5, cursor=3
+        assert_eq!(ed.selected_text(), Some("lo".to_string()));
+    }
+
+    #[test]
+    fn selected_text_no_selection_returns_none() {
+        let mut ed = InputEditor::default();
+        ed.push_str("hello");
+        assert_eq!(ed.selected_text(), None);
+    }
+
+    // ── 2.11 delete_selection() ───────────────────────────────────────────────
+
+    #[test]
+    fn delete_selection_removes_selected_range() {
+        let mut ed = InputEditor::default();
+        ed.push_str("hello");
+        ed.move_to_start(false);
+        ed.move_right(true);
+        ed.move_right(true); // select "he"
+        ed.delete_selection();
+        assert_eq!(ed.text(), "llo");
+        assert_eq!(ed.cursor_byte_pos(), 0);
+        assert!(ed.anchor.is_none());
+    }
+
+    #[test]
+    fn delete_selection_no_selection_is_noop() {
+        let mut ed = InputEditor::default();
+        ed.push_str("hello");
+        ed.delete_selection();
+        assert_eq!(ed.text(), "hello");
+        assert_eq!(ed.cursor_byte_pos(), 5);
+        assert!(ed.anchor.is_none());
     }
 }
