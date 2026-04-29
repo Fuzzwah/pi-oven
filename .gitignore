@@ -12,3 +12,6 @@ dist/
 # Editor / IDE — per-user, not project-shared
 .vscode/
 .idea/
+
+# Claude Code per-machine overrides (e.g. local permission allowlists)
+.claude/settings.local.json
