@@ -53,6 +53,8 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     return input.color;
 }
 "#;
+const UNDERLINE_HEIGHT_RATIO: f32 = 0.08;
+const UNDERLINE_OFFSET_RATIO: f32 = 0.12;
 
 /// 0–255 RGBA. Stored as four `u8`s rather than [f64; 4] so the conversion to
 /// wgpu's `Color` is trivial and lossless.
@@ -458,8 +460,8 @@ fn state_to_span(state: (RColor, RColor, Modifier, String)) -> Span {
 
 fn build_fill_rects(grid: &Grid, metrics: CellMetrics) -> Vec<FillRect> {
     let mut rects = Vec::new();
-    let underline_height = (metrics.font_size_px * 0.08).max(1.0);
-    let underline_offset = (metrics.line_height_px * 0.12).max(1.0);
+    let underline_height = (metrics.font_size_px * UNDERLINE_HEIGHT_RATIO).max(1.0);
+    let underline_offset = (metrics.line_height_px * UNDERLINE_OFFSET_RATIO).max(1.0);
 
     for y in 0..grid.rows() {
         for (start, end, color) in collect_row_runs(grid, y, |cell| ratatui_color_to_rgba(cell.bg))
@@ -634,6 +636,8 @@ fn ansi_index_to_rgb(index: u8) -> [u8; 3] {
 }
 
 fn cube_channel(component: u8) -> u8 {
+    // ANSI 256-color cube channels are 0, 95, 135, 175, 215, 255. Index 0 maps
+    // to 0; indices 1..=5 use 55 + component*40.
     if component == 0 { 0 } else { 55 + component * 40 }
 }
 
