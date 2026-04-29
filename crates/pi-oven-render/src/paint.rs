@@ -2,17 +2,12 @@
 //!
 //! The painter owns the GPU resources tied to a single window: a wgpu
 //! `Surface`, `Device`, `Queue`, plus glyphon's `FontSystem`, `SwashCache`,
-//! `TextAtlas`, and `TextRenderer`. Each frame, [`Painter::paint`] reads the
-//! current [`Grid`] and produces a glyphon `Buffer` whose contents are one
-//! styled run per contiguous same-style cell range; that buffer is then
-//! rendered into the surface, after clearing to the configured background
-//! colour first.
+//! `TextAtlas`, and `TextRenderer`.
 //!
-//! API drift note: wgpu, glyphon and winit pin tightly to each other and
-//! their public APIs change between minor versions. If `cargo build` reports
-//! mismatches, prefer adjusting the calls below over downgrading pins —
-//! the surrounding shape (resource ownership, paint flow, resize handling)
-//! is what's load-bearing.
+//! Each frame, [`Painter::paint`] receives the set of grid rows that changed
+//! since the last call. Only those rows are re-shaped; the rest reuse their
+//! cached per-row [`Buffer`]s. This keeps the hot path O(changed_rows) rather
+//! than O(all_cells), making keystroke rendering essentially free.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -56,8 +51,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 const UNDERLINE_HEIGHT_RATIO: f32 = 0.08;
 const UNDERLINE_OFFSET_RATIO: f32 = 0.12;
 
-/// 0–255 RGBA. Stored as four `u8`s rather than [f64; 4] so the conversion to
-/// wgpu's `Color` is trivial and lossless.
+/// 0–255 RGBA.
 #[derive(Debug, Clone, Copy)]
 pub struct ClearColor(pub [u8; 4]);
 
@@ -108,17 +102,15 @@ pub struct Painter {
     #[allow(dead_code)]
     scale_factor: f64,
 
-    // Persistent per-frame render state. Rebuilt only when content or layout
-    // changes; warm on subsequent frames so paint() does minimal CPU work.
-    glyphon_buffer: Buffer,
+    /// One shaped glyphon Buffer per grid row. Rebuilt only for dirty rows;
+    /// unchanged rows keep their cached Buffer across frames.
+    row_buffers: Vec<Buffer>,
+
     rect_gpu_buf: Option<wgpu::Buffer>,
     rect_vertex_count: u32,
 }
 
 impl Painter {
-    /// Construct the painter for `window`. Loads any `.ttf` files under
-    /// `crates/pi-oven-render/assets/fonts/` into glyphon's `FontSystem`; if
-    /// none are present the OS's system fonts are used.
     pub async fn new(window: Arc<Window>, font_size_px: f32) -> Result<Self> {
         let size = window.inner_size();
         let scale_factor = window.scale_factor();
@@ -137,9 +129,6 @@ impl Painter {
             .await
             .ok_or_else(|| anyhow!("no wgpu adapter available"))?;
 
-        // Use the adapter's reported limits rather than the conservative
-        // downlevel defaults — the latter cap textures at 2048×2048, which
-        // is smaller than a single retina-display surface.
         let (device, queue) = adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
@@ -195,24 +184,11 @@ impl Painter {
             TextRenderer::new(&mut atlas, &device, wgpu::MultisampleState::default(), None);
         let rect_pipeline = create_rect_pipeline(&device, surface_format);
 
-        // Size a monospace cell as `font_size * 0.6` wide × `font_size * 1.25`
-        // tall — close enough for a uniform monospace family. The painter
-        // does not measure glyph extents itself; widget code that cares about
-        // exact layout should query [`Painter::cell_metrics`].
         let metrics = CellMetrics {
             cell_width_px: font_size_px * 0.6,
             line_height_px: font_size_px * 1.25,
             font_size_px,
         };
-
-        let mut glyphon_buffer =
-            Buffer::new(&mut font_system, Metrics::new(font_size_px, font_size_px * 1.25));
-        glyphon_buffer.set_size(
-            &mut font_system,
-            Some(size.width as f32),
-            Some(size.height as f32),
-        );
-        glyphon_buffer.set_wrap(&mut font_system, Wrap::None);
 
         Ok(Self {
             window,
@@ -230,7 +206,7 @@ impl Painter {
             metrics,
             clear_color: ClearColor::default(),
             scale_factor,
-            glyphon_buffer,
+            row_buffers: Vec::new(),
             rect_gpu_buf: None,
             rect_vertex_count: 0,
         })
@@ -246,15 +222,9 @@ impl Painter {
             line_height_px: font_size_px * 1.25,
             font_size_px,
         };
-        self.glyphon_buffer.set_metrics(
-            &mut self.font_system,
-            Metrics::new(font_size_px, font_size_px * 1.25),
-        );
-        self.glyphon_buffer.set_size(
-            &mut self.font_system,
-            Some(self.surface_config.width as f32),
-            Some(self.surface_config.height as f32),
-        );
+        // Discard cached row buffers; rebuild_terminal() creates a fresh
+        // backend that marks all rows dirty on the next frame.
+        self.row_buffers.clear();
         self.rect_gpu_buf = None;
     }
 
@@ -262,12 +232,10 @@ impl Painter {
         PhysicalSize::new(self.surface_config.width, self.surface_config.height)
     }
 
-    /// Returns the grid dimensions (cols, rows) the current surface size + cell
-    /// metrics imply. Callers should pass the result back into
-    /// [`crate::Grid::resize`] when reacting to a resize event.
     pub fn grid_dimensions(&self) -> (u16, u16) {
         let cols = (self.surface_config.width as f32 / self.metrics.cell_width_px).floor() as u16;
-        let rows = (self.surface_config.height as f32 / self.metrics.line_height_px).floor() as u16;
+        let rows =
+            (self.surface_config.height as f32 / self.metrics.line_height_px).floor() as u16;
         (cols.max(1), rows.max(1))
     }
 
@@ -278,28 +246,24 @@ impl Painter {
         self.surface_config.width = new_size.width;
         self.surface_config.height = new_size.height;
         self.surface.configure(&self.device, &self.surface_config);
-        self.glyphon_buffer.set_size(
-            &mut self.font_system,
-            Some(new_size.width as f32),
-            Some(new_size.height as f32),
-        );
+        // Row buffers are invalidated implicitly: rebuild_terminal() creates a
+        // fresh backend that marks every row dirty on the first draw.
+        self.row_buffers.clear();
         self.rect_gpu_buf = None;
     }
 
     pub fn scale_factor_changed(&mut self, new_scale: f64) {
         self.scale_factor = new_scale;
-        // The window will deliver a follow-up `Resized` event with the new
-        // physical size; we react there.
     }
 
     /// Render `grid` to the surface.
     ///
-    /// `content_changed` should be true whenever the grid content has changed
-    /// since the last call (font resize, window resize, or UI update). When
-    /// false, the cached shaped buffer and GPU rect buffer are reused, and
-    /// `paint()` only pays the cost of `text_renderer.prepare()` (fast, warm
-    /// atlas) plus the GPU render pass itself.
-    pub fn paint(&mut self, grid: &Grid, content_changed: bool) -> Result<()> {
+    /// `dirty_rows` contains the row indices that changed since the last call
+    /// (from [`RatatuiGridBackend::take_dirty_rows`]). Only those rows are
+    /// re-shaped; every other row reuses its cached glyphon [`Buffer`].
+    /// An empty slice means nothing changed — the painter reuses all cached
+    /// GPU buffers and only pays for the GPU render pass itself.
+    pub fn paint(&mut self, grid: &Grid, dirty_rows: &[u16]) -> Result<()> {
         let frame = match self.surface.get_current_texture() {
             Ok(f) => f,
             Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
@@ -311,30 +275,48 @@ impl Painter {
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-
         let mut encoder =
             self.device
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("pi-oven encoder"),
                 });
 
-        // Rebuild text layout and fill-rect geometry only when content or
-        // layout changed. On static frames this block is skipped entirely.
-        if content_changed || self.rect_gpu_buf.is_none() {
-            let lines = build_lines(grid);
-            let spans: Vec<(&str, Attrs)> = lines
-                .iter()
-                .flat_map(|line| line.spans.iter().map(|s| (s.text.as_str(), s.attrs.clone())))
-                .collect();
+        // --- Sync row_buffers length to current grid height ---------------------
+        let grid_rows = grid.rows() as usize;
+        let font_size = self.metrics.font_size_px;
+        let line_height = self.metrics.line_height_px;
+        let surf_width = self.surface_config.width as f32;
+
+        while self.row_buffers.len() < grid_rows {
+            let mut buf =
+                Buffer::new(&mut self.font_system, Metrics::new(font_size, line_height));
+            buf.set_size(&mut self.font_system, Some(surf_width), Some(line_height));
+            buf.set_wrap(&mut self.font_system, Wrap::None);
+            self.row_buffers.push(buf);
+        }
+        self.row_buffers.truncate(grid_rows);
+
+        // --- Reshape only the rows that changed ---------------------------------
+        for &y in dirty_rows {
+            let y_idx = y as usize;
+            if y_idx >= self.row_buffers.len() {
+                continue;
+            }
+            let buf = &mut self.row_buffers[y_idx];
+            buf.set_metrics(&mut self.font_system, Metrics::new(font_size, line_height));
+            let spans = build_row_spans(grid, y);
             let default_attrs = Attrs::new().family(Family::Monospace);
-            self.glyphon_buffer.set_rich_text(
+            buf.set_rich_text(
                 &mut self.font_system,
-                spans.iter().map(|(t, a)| (*t, a.clone())),
+                spans.iter().map(|(t, a)| (t.as_str(), a.clone())),
                 default_attrs,
                 Shaping::Basic,
             );
-            self.glyphon_buffer.shape_until_scroll(&mut self.font_system, false);
+            buf.shape_until_scroll(&mut self.font_system, false);
+        }
 
+        // --- Rebuild fill-rect GPU buffer when anything changed -----------------
+        if !dirty_rows.is_empty() || self.rect_gpu_buf.is_none() {
             let fill_rects = build_fill_rects(grid, self.metrics);
             let rect_vertices = fill_rects_to_vertices(
                 &fill_rects,
@@ -352,6 +334,7 @@ impl Painter {
             });
         }
 
+        // --- Prepare glyphon (atlas lookup + upload) ----------------------------
         self.viewport.update(
             &self.queue,
             Resolution {
@@ -361,20 +344,28 @@ impl Painter {
         );
 
         {
-            let text_area = TextArea {
-                buffer: &self.glyphon_buffer,
-                left: 0.0,
-                top: 0.0,
-                scale: 1.0,
-                bounds: TextBounds {
-                    left: 0,
-                    top: 0,
-                    right: self.surface_config.width as i32,
-                    bottom: self.surface_config.height as i32,
-                },
-                default_color: GColor::rgb(0xff, 0xff, 0xff),
-                custom_glyphs: &[],
-            };
+            // Build TextAreas borrowing from row_buffers; block ends before
+            // the render pass so the immutable borrow is released cleanly.
+            let text_areas: Vec<TextArea<'_>> = self
+                .row_buffers
+                .iter()
+                .enumerate()
+                .map(|(y, buf)| TextArea {
+                    buffer: buf,
+                    left: 0.0,
+                    top: y as f32 * line_height,
+                    scale: 1.0,
+                    bounds: TextBounds {
+                        left: 0,
+                        top: 0,
+                        right: self.surface_config.width as i32,
+                        bottom: self.surface_config.height as i32,
+                    },
+                    default_color: GColor::rgb(0xff, 0xff, 0xff),
+                    custom_glyphs: &[],
+                })
+                .collect();
+
             self.text_renderer
                 .prepare(
                     &self.device,
@@ -382,12 +373,13 @@ impl Painter {
                     &mut self.font_system,
                     &mut self.atlas,
                     &self.viewport,
-                    [text_area],
+                    text_areas,
                     &mut self.swash_cache,
                 )
                 .context("prepare glyphon text")?;
         }
 
+        // --- Render pass --------------------------------------------------------
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("pi-oven main pass"),
@@ -420,16 +412,56 @@ impl Painter {
     }
 }
 
-/// One styled span within a row.
-struct Span {
-    text: String,
-    attrs: Attrs<'static>,
+// =============================================================================
+// Row span building — hot path, called only for dirty rows
+// =============================================================================
+
+/// Build styled spans for a single grid row. Returns `Vec<(text, Attrs)>`
+/// suitable for `Buffer::set_rich_text`.
+fn build_row_spans(grid: &Grid, y: u16) -> Vec<(String, Attrs<'static>)> {
+    let mut spans: Vec<(String, Attrs<'static>)> = Vec::new();
+    let mut current: Option<(RColor, RColor, Modifier, String)> = None;
+
+    for x in 0..grid.cols() {
+        let cell = grid.get(x, y).cloned().unwrap_or_default();
+        match &mut current {
+            Some(state)
+                if state.0 == cell.fg && state.1 == cell.bg && state.2 == cell.attrs =>
+            {
+                state.3.push_str(&cell.symbol);
+            }
+            _ => {
+                if let Some(state) = current.take() {
+                    spans.push(state_to_attrs(state));
+                }
+                current = Some((cell.fg, cell.bg, cell.attrs, cell.symbol.clone()));
+            }
+        }
+    }
+    if let Some(state) = current.take() {
+        spans.push(state_to_attrs(state));
+    }
+    spans
 }
 
-/// One row's worth of styled spans, terminated by an implicit '\n'.
-struct Line {
-    spans: Vec<Span>,
+fn state_to_attrs(state: (RColor, RColor, Modifier, String)) -> (String, Attrs<'static>) {
+    let (fg, _bg, modifiers, text) = state;
+    let mut attrs = Attrs::new().family(Family::Monospace);
+    if let Some(c) = ratatui_color_to_glyphon(fg) {
+        attrs = attrs.color(c);
+    }
+    if modifiers.contains(Modifier::BOLD) {
+        attrs = attrs.weight(glyphon::Weight::BOLD);
+    }
+    if modifiers.contains(Modifier::ITALIC) {
+        attrs = attrs.style(glyphon::Style::Italic);
+    }
+    (text, attrs)
 }
+
+// =============================================================================
+// Fill-rect geometry — background colors + underlines
+// =============================================================================
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct FillRect {
@@ -445,59 +477,6 @@ struct FillRect {
 struct FillVertex {
     position: [f32; 2],
     color: [f32; 4],
-}
-
-fn build_lines(grid: &Grid) -> Vec<Line> {
-    let mut lines = Vec::with_capacity(grid.rows() as usize);
-    for y in 0..grid.rows() {
-        let mut spans: Vec<Span> = Vec::new();
-        let mut current: Option<(RColor, RColor, Modifier, String)> = None;
-
-        for x in 0..grid.cols() {
-            let cell = grid.get(x, y).cloned().unwrap_or_default();
-            match &mut current {
-                Some(state) if state.0 == cell.fg && state.1 == cell.bg && state.2 == cell.attrs => {
-                    state.3.push_str(&cell.symbol);
-                }
-                _ => {
-                    if let Some(state) = current.take() {
-                        spans.push(state_to_span(state));
-                    }
-                    let text = cell.symbol.clone();
-                    current = Some((cell.fg, cell.bg, cell.attrs, text));
-                }
-            }
-        }
-        if let Some(state) = current.take() {
-            spans.push(state_to_span(state));
-        }
-        // Implicit row separator.
-        if y + 1 < grid.rows() {
-            spans.push(Span {
-                text: "\n".to_string(),
-                attrs: Attrs::new().family(Family::Monospace),
-            });
-        }
-        lines.push(Line { spans });
-    }
-    lines
-}
-
-fn state_to_span(state: (RColor, RColor, Modifier, String)) -> Span {
-    let (fg, _bg, modifiers, text) = state;
-    let mut attrs = Attrs::new().family(Family::Monospace);
-    if let Some(c) = ratatui_color_to_glyphon(fg) {
-        attrs = attrs.color(c);
-    }
-    if modifiers.contains(Modifier::BOLD) {
-        attrs = attrs.weight(glyphon::Weight::BOLD);
-    }
-    if modifiers.contains(Modifier::ITALIC) {
-        attrs = attrs.style(glyphon::Style::Italic);
-    }
-    // Background fills and underline strokes are rendered as quads in the wgpu
-    // pass; glyphon only handles the text spans themselves.
-    Span { text, attrs }
 }
 
 fn build_fill_rects(grid: &Grid, metrics: CellMetrics) -> Vec<FillRect> {
@@ -516,13 +495,14 @@ fn build_fill_rects(grid: &Grid, metrics: CellMetrics) -> Vec<FillRect> {
                 color,
             });
         }
-
         for (start, end, color) in collect_row_runs(grid, y, |cell| {
             cell.attrs
                 .contains(Modifier::UNDERLINED)
                 .then(|| ratatui_color_to_rgba(cell.fg).unwrap_or([1.0, 1.0, 1.0, 1.0]))
         }) {
-            let top = (y as f32 + 1.0) * metrics.line_height_px - underline_offset - underline_height;
+            let top = (y as f32 + 1.0) * metrics.line_height_px
+                - underline_offset
+                - underline_height;
             rects.push(FillRect {
                 left: start * metrics.cell_width_px,
                 top,
@@ -532,15 +512,10 @@ fn build_fill_rects(grid: &Grid, metrics: CellMetrics) -> Vec<FillRect> {
             });
         }
     }
-
     rects
 }
 
-fn collect_row_runs<F>(
-    grid: &Grid,
-    y: u16,
-    color_for_cell: F,
-) -> Vec<(f32, f32, [f32; 4])>
+fn collect_row_runs<F>(grid: &Grid, y: u16, color_for_cell: F) -> Vec<(f32, f32, [f32; 4])>
 where
     F: Fn(&Cell) -> Option<[f32; 4]>,
 {
@@ -554,21 +529,17 @@ where
         if cell_color.is_some() && cell_color == run_color {
             continue;
         }
-
         if let (Some(start), Some(color)) = (run_start.take(), run_color.take()) {
             runs.push((start as f32, x as f32, color));
         }
-
         if let Some(color) = cell_color {
             run_start = Some(x);
             run_color = Some(color);
         }
     }
-
     if let (Some(start), Some(color)) = (run_start.take(), run_color.take()) {
         runs.push((start as f32, grid.cols() as f32, color));
     }
-
     runs
 }
 
@@ -580,7 +551,6 @@ fn fill_rects_to_vertices(rects: &[FillRect], width: f32, height: f32) -> Vec<Fi
         let top = px_to_ndc_y(rect.top, height);
         let bottom = px_to_ndc_y(rect.bottom, height);
         let color = rect.color;
-
         vertices.extend_from_slice(&[
             FillVertex { position: [left, top], color },
             FillVertex { position: [right, top], color },
@@ -600,6 +570,10 @@ fn px_to_ndc_x(x: f32, width: f32) -> f32 {
 fn px_to_ndc_y(y: f32, height: f32) -> f32 {
     1.0 - (y / height) * 2.0
 }
+
+// =============================================================================
+// Color utilities
+// =============================================================================
 
 fn ratatui_color_to_glyphon(c: RColor) -> Option<GColor> {
     ratatui_color_to_rgba_u8(c).map(|[r, g, b, _]| GColor::rgba(r, g, b, 0xff))
@@ -660,7 +634,6 @@ fn ansi_index_to_rgb(index: u8) -> [u8; 3] {
         [0x00, 0xff, 0xff],
         [0xff, 0xff, 0xff],
     ];
-
     match index {
         0..=15 => ANSI_16[index as usize],
         16..=231 => {
@@ -678,10 +651,12 @@ fn ansi_index_to_rgb(index: u8) -> [u8; 3] {
 }
 
 fn cube_channel(component: u8) -> u8 {
-    // ANSI 256-color cube channels are 0, 95, 135, 175, 215, 255. Index 0 maps
-    // to 0; indices 1..=5 use 55 + component*40.
     if component == 0 { 0 } else { 55 + component * 40 }
 }
+
+// =============================================================================
+// Pipeline helpers
+// =============================================================================
 
 fn create_rect_pipeline(
     device: &wgpu::Device,
@@ -696,7 +671,6 @@ fn create_rect_pipeline(
         bind_group_layouts: &[],
         push_constant_ranges: &[],
     });
-
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("pi-oven rect pipeline"),
         layout: Some(&layout),
@@ -746,6 +720,32 @@ fn create_rect_pipeline(
         cache: None,
     })
 }
+
+fn load_bundled_fonts(font_system: &mut FontSystem) -> Result<()> {
+    let assets_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts");
+    let read = match std::fs::read_dir(&assets_dir) {
+        Ok(r) => r,
+        Err(_) => return Ok(()),
+    };
+    let db = font_system.db_mut();
+    for entry in read.flatten() {
+        let path = entry.path();
+        if path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.eq_ignore_ascii_case("ttf") || e.eq_ignore_ascii_case("otf"))
+            .unwrap_or(false)
+        {
+            db.load_font_file(&path)
+                .map_err(|e| anyhow!("load font {}: {e:?}", path.display()))?;
+        }
+    }
+    Ok(())
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
 
 #[cfg(test)]
 mod tests {
@@ -811,26 +811,4 @@ mod tests {
         assert_eq!(ansi_index_to_rgb(46), [0x00, 0xff, 0x00]);
         assert_eq!(ansi_index_to_rgb(244), [0x80, 0x80, 0x80]);
     }
-}
-
-fn load_bundled_fonts(font_system: &mut FontSystem) -> Result<()> {
-    let assets_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts");
-    let read = match std::fs::read_dir(&assets_dir) {
-        Ok(r) => r,
-        Err(_) => return Ok(()), // No assets dir is fine; fall back to system fonts.
-    };
-    let db = font_system.db_mut();
-    for entry in read.flatten() {
-        let path = entry.path();
-        if path
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(|e| e.eq_ignore_ascii_case("ttf") || e.eq_ignore_ascii_case("otf"))
-            .unwrap_or(false)
-        {
-            db.load_font_file(&path)
-                .map_err(|e| anyhow!("load font {}: {e:?}", path.display()))?;
-        }
-    }
-    Ok(())
 }

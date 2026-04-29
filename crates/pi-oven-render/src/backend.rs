@@ -17,7 +17,9 @@ pub struct RatatuiGridBackend {
     grid: Grid,
     cursor: Position,
     cursor_visible: bool,
-    content_changed: bool,
+    /// Rows that received at least one changed cell since the last
+    /// [`take_dirty_rows`](Self::take_dirty_rows) call.
+    dirty_rows: Vec<u16>,
 }
 
 impl RatatuiGridBackend {
@@ -26,7 +28,7 @@ impl RatatuiGridBackend {
             grid: Grid::new(cols, rows),
             cursor: Position::new(0, 0),
             cursor_visible: true,
-            content_changed: false,
+            dirty_rows: Vec::new(),
         }
     }
 
@@ -38,8 +40,7 @@ impl RatatuiGridBackend {
         &mut self.grid
     }
 
-    /// Resize the underlying grid. Call this when the window resizes; ratatui's
-    /// `Terminal` will re-issue a full draw on its next frame.
+    /// Resize the underlying grid.
     pub fn resize(&mut self, cols: u16, rows: u16) {
         self.grid.resize(cols, rows);
         self.cursor = Position::new(
@@ -52,11 +53,16 @@ impl RatatuiGridBackend {
         self.cursor_visible
     }
 
-    /// Returns whether any cells changed since the last call to this method.
-    /// Resets the flag on read. Ratatui only calls `draw()` with changed cells,
-    /// so a false return means the grid is identical to the previous frame.
-    pub fn take_content_changed(&mut self) -> bool {
-        std::mem::replace(&mut self.content_changed, false)
+    /// Returns the set of row indices that changed since the last call, and
+    /// clears the internal dirty set. An empty return means the grid is
+    /// identical to the previous frame — the painter can skip all CPU work and
+    /// reuse its cached GPU buffers.
+    pub fn take_dirty_rows(&mut self) -> Vec<u16> {
+        // Deduplicate: ratatui calls draw() once per changed cell, so a row
+        // with many changes appears many times. Sort + dedup is cheap.
+        self.dirty_rows.sort_unstable();
+        self.dirty_rows.dedup();
+        std::mem::take(&mut self.dirty_rows)
     }
 }
 
@@ -66,7 +72,7 @@ impl Backend for RatatuiGridBackend {
         I: Iterator<Item = (u16, u16, &'a RatatuiCell)>,
     {
         for (x, y, rcell) in content {
-            self.content_changed = true;
+            self.dirty_rows.push(y);
             self.grid.set(
                 x,
                 y,
@@ -112,8 +118,6 @@ impl Backend for RatatuiGridBackend {
     fn window_size(&mut self) -> io::Result<WindowSize> {
         Ok(WindowSize {
             columns_rows: Size::new(self.grid.cols(), self.grid.rows()),
-            // The cell-grid backend has no notion of physical pixel size; the
-            // paint pipeline keeps that separately.
             pixels: Size::new(0, 0),
         })
     }

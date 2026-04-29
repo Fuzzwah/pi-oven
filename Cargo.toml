@@ -29,3 +29,7 @@ opt-level = 2
 opt-level = 2
 [profile.dev.package.ttf-parser]
 opt-level = 2
+# First-party render crate has hot loops (build_row_spans, fill-rect assembly)
+# that need opt-level 2 to stay fast in dev builds.
+[profile.dev.package.pi-oven-render]
+opt-level = 2
