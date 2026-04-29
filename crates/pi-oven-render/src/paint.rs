@@ -222,6 +222,14 @@ impl Painter {
         self.metrics
     }
 
+    pub fn set_font_size(&mut self, font_size_px: f32) {
+        self.metrics = CellMetrics {
+            cell_width_px: font_size_px * 0.6,
+            line_height_px: font_size_px * 1.25,
+            font_size_px,
+        };
+    }
+
     pub fn surface_size(&self) -> PhysicalSize<u32> {
         PhysicalSize::new(self.surface_config.width, self.surface_config.height)
     }

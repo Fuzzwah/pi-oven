@@ -124,13 +124,17 @@ mod wgpu_main {
 
     use crate::keys::{translate, KeyAction};
 
-    const FONT_SIZE_PX: f32 = 14.0;
+    const FONT_SIZE_PX: f32 = 18.0;
+    const FONT_SIZE_STEP: f32 = 2.0;
+    const FONT_SIZE_MIN: f32 = 8.0;
+    const FONT_SIZE_MAX: f32 = 48.0;
 
     struct App {
         window: Option<Arc<Window>>,
         painter: Option<Painter>,
         terminal: Option<Terminal<RatatuiGridBackend>>,
         modifiers: ModifiersState,
+        font_size: f32,
     }
 
     impl App {
@@ -140,6 +144,7 @@ mod wgpu_main {
                 painter: None,
                 terminal: None,
                 modifiers: ModifiersState::empty(),
+                font_size: FONT_SIZE_PX,
             }
         }
 
@@ -254,8 +259,26 @@ mod wgpu_main {
                 pressed = ev.state.is_pressed(),
                 "keyboard event"
             );
-            if matches!(action, KeyAction::CmdW) {
-                event_loop.exit();
+            match action {
+                KeyAction::CmdW => event_loop.exit(),
+                KeyAction::CmdEqual => self.adjust_font_size(FONT_SIZE_STEP),
+                KeyAction::CmdMinus => self.adjust_font_size(-FONT_SIZE_STEP),
+                _ => {}
+            }
+        }
+
+        fn adjust_font_size(&mut self, delta: f32) {
+            let new_size = (self.font_size + delta).clamp(FONT_SIZE_MIN, FONT_SIZE_MAX);
+            if (new_size - self.font_size).abs() < 0.01 {
+                return;
+            }
+            self.font_size = new_size;
+            if let Some(painter) = self.painter.as_mut() {
+                painter.set_font_size(new_size);
+            }
+            self.rebuild_terminal();
+            if let Some(w) = self.window.as_ref() {
+                w.request_redraw();
             }
         }
     }
