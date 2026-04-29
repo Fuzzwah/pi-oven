@@ -222,10 +222,7 @@ impl Painter {
             line_height_px: font_size_px * 1.25,
             font_size_px,
         };
-        // Discard cached row buffers; rebuild_terminal() creates a fresh
-        // backend that marks all rows dirty on the next frame.
-        self.row_buffers.clear();
-        self.rect_gpu_buf = None;
+        self.rebuild_layout();
     }
 
     pub fn surface_size(&self) -> PhysicalSize<u32> {
@@ -239,15 +236,22 @@ impl Painter {
         (cols.max(1), rows.max(1))
     }
 
-    pub fn resize(&mut self, new_size: PhysicalSize<u32>) {
+    /// Reconfigure the wgpu surface to the new size. Cheap: no glyph reshape,
+    /// no row-buffer rebuild. Use during active resize for smooth scaling;
+    /// follow up with [`rebuild_layout`] once the resize settles.
+    pub fn resize_surface_only(&mut self, new_size: PhysicalSize<u32>) {
         if new_size.width == 0 || new_size.height == 0 {
             return;
         }
         self.surface_config.width = new_size.width;
         self.surface_config.height = new_size.height;
         self.surface.configure(&self.device, &self.surface_config);
-        // Row buffers are invalidated implicitly: rebuild_terminal() creates a
-        // fresh backend that marks every row dirty on the first draw.
+    }
+
+    /// Drop cached row buffers and rect GPU buffer so the next paint reshapes
+    /// every row at the current surface dimensions / font metrics. Call after
+    /// resize debounce expires or after a font-size change.
+    pub fn rebuild_layout(&mut self) {
         self.row_buffers.clear();
         self.rect_gpu_buf = None;
     }

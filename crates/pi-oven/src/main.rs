@@ -132,6 +132,12 @@ mod wgpu_main {
     const FONT_SIZE_MIN: f32 = 12.0;
     const FONT_SIZE_MAX: f32 = 48.0;
     const CURSOR_BLINK_INTERVAL: Duration = Duration::from_millis(530);
+    /// Window resize events fire continuously while the user drags. Defer the
+    /// expensive layout rebuild until the stream goes quiet for this long.
+    const RESIZE_DEBOUNCE: Duration = Duration::from_millis(50);
+    /// Font-size key repeats fire at OS key-repeat rate. Coalesce disk writes
+    /// until the user stops adjusting.
+    const FONT_SAVE_DEBOUNCE: Duration = Duration::from_millis(500);
 
     struct App {
         window: Option<Arc<Window>>,
@@ -141,6 +147,8 @@ mod wgpu_main {
         font_size: f32,
         app_state: pi_oven_ui::AppState,
         next_blink: Instant,
+        last_resize: Option<Instant>,
+        font_save_pending: Option<Instant>,
     }
 
     impl App {
@@ -154,6 +162,8 @@ mod wgpu_main {
                     .clamp(FONT_SIZE_MIN, FONT_SIZE_MAX),
                 app_state: pi_oven_ui::AppState::default(),
                 next_blink: Instant::now() + CURSOR_BLINK_INTERVAL,
+                last_resize: None,
+                font_save_pending: None,
             }
         }
 
@@ -232,13 +242,17 @@ mod wgpu_main {
             match event {
                 WindowEvent::CloseRequested => {
                     tracing::info!("close requested");
+                    self.flush_font_save();
                     event_loop.exit();
                 }
                 WindowEvent::Resized(size) => {
                     if let Some(p) = self.painter.as_mut() {
-                        p.resize(size);
-                        self.rebuild_terminal();
+                        // Cheap path: reconfigure the surface so the GPU scales
+                        // the existing texture. Defer the row-buffer rebuild
+                        // until RESIZE_DEBOUNCE elapses without further events.
+                        p.resize_surface_only(size);
                     }
+                    self.last_resize = Some(Instant::now());
                     if let Some(w) = self.window.as_ref() {
                         w.request_redraw();
                     }
@@ -263,14 +277,49 @@ mod wgpu_main {
 
         fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
             let now = Instant::now();
+            let mut redraw_needed = false;
+
             if now >= self.next_blink {
                 self.app_state.cursor_visible = !self.app_state.cursor_visible;
                 self.next_blink = now + CURSOR_BLINK_INTERVAL;
+                redraw_needed = true;
+            }
+
+            // Flush a pending resize once the event stream has gone quiet.
+            if let Some(t) = self.last_resize {
+                if now.duration_since(t) >= RESIZE_DEBOUNCE {
+                    if let Some(p) = self.painter.as_mut() {
+                        p.rebuild_layout();
+                    }
+                    self.rebuild_terminal();
+                    self.last_resize = None;
+                    redraw_needed = true;
+                }
+            }
+
+            // Flush a pending font-size save once the user stops adjusting.
+            if let Some(t) = self.font_save_pending {
+                if now.duration_since(t) >= FONT_SAVE_DEBOUNCE {
+                    crate::config::save_font_size(self.font_size);
+                    self.font_save_pending = None;
+                }
+            }
+
+            if redraw_needed {
                 if let Some(w) = self.window.as_ref() {
                     w.request_redraw();
                 }
             }
-            event_loop.set_control_flow(ControlFlow::WaitUntil(self.next_blink));
+
+            // Wake at the earliest pending deadline.
+            let mut deadline = self.next_blink;
+            if let Some(t) = self.last_resize {
+                deadline = deadline.min(t + RESIZE_DEBOUNCE);
+            }
+            if let Some(t) = self.font_save_pending {
+                deadline = deadline.min(t + FONT_SAVE_DEBOUNCE);
+            }
+            event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
         }
     }
 
@@ -337,7 +386,9 @@ mod wgpu_main {
             };
             if changed {
                 self.reset_blink();
-                self.redraw();
+                if let Some(w) = self.window.as_ref() {
+                    w.request_redraw();
+                }
             }
         }
 
@@ -347,12 +398,20 @@ mod wgpu_main {
                 return;
             }
             self.font_size = new_size;
-            crate::config::save_font_size(new_size);
+            self.font_save_pending = Some(Instant::now());
             if let Some(painter) = self.painter.as_mut() {
                 painter.set_font_size(new_size);
             }
             self.rebuild_terminal();
-            self.redraw();
+            if let Some(w) = self.window.as_ref() {
+                w.request_redraw();
+            }
+        }
+
+        fn flush_font_save(&mut self) {
+            if self.font_save_pending.take().is_some() {
+                crate::config::save_font_size(self.font_size);
+            }
         }
     }
 
