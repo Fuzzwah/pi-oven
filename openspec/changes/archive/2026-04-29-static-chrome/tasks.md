@@ -45,7 +45,7 @@
 
 ## 7. Manual verification
 
-- [ ] 7.1 Run `cargo run -p pi-oven` (default `dev-wgpu`) and confirm the right pane shows: tab cells with badges, header title + stats sub-row, `(empty)` conversation body, input bar with cursor, status bar with model/ctx/PR/branch, and the hotkey legend at the bottom.
-- [ ] 7.2 Resize the window from very small to very large and confirm the chrome strips keep their fixed heights and the conversation body absorbs the change.
-- [ ] 7.3 Run `cargo run -p pi-oven --no-default-features --features dev-crossterm` and confirm the same layout renders in the host terminal.
-- [ ] 7.4 Confirm `Cmd+W` still quits and clipboard shortcuts (`Cmd+C/X/V`) on the input bar still behave as before.
+- [x] 7.1 Run `cargo run -p pi-oven` (default `dev-wgpu`) and confirm the right pane shows: tab cells with badges, header title + stats sub-row, `(empty)` conversation body, input bar with cursor, status bar with model/ctx/PR/branch, and the hotkey legend at the bottom.
+- [x] 7.2 Resize the window from very small to very large and confirm the chrome strips keep their fixed heights and the conversation body absorbs the change.
+- [x] 7.3 Run `cargo run -p pi-oven --no-default-features --features dev-crossterm` and confirm the same layout renders in the host terminal.
+- [x] 7.4 Confirm `Cmd+W` still quits and clipboard shortcuts (`Cmd+C/X/V`) on the input bar still behave as before.
