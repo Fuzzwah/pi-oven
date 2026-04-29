@@ -1,95 +1,43 @@
 ## ADDED Requirements
 
-### Requirement: Top-level pane layout
+### Requirement: Input bar clipboard shortcuts (dev-wgpu)
 
-The client UI SHALL compose four panes — sidebar, tab strip, conversation, input bar — into a single layout that fills the available render area. The layout SHALL be exposed from `pi-oven-ui` as a single render entrypoint that the binary calls inside ratatui's draw closure.
+The input bar in the `dev-wgpu` backend SHALL handle `Cmd+C`, `Cmd+X`, and `Cmd+V` to trigger clipboard copy, cut, and paste respectively. These shortcuts SHALL be dispatched through the existing `CmdLetter` translation path in `keys.rs`.
 
-#### Scenario: Single render entrypoint exists
+#### Scenario: Cmd+C is dispatched as copy in wgpu backend
 
-- **WHEN** the binary calls `pi_oven_ui::render(frame)` inside `terminal.draw(|f| ...)`
-- **THEN** the four panes are drawn into `frame`'s buffer
-- **AND** no further per-pane calls are required from the binary
+- **WHEN** the user presses `Cmd+C` while the wgpu window has focus
+- **THEN** `handle_key` routes the event to the clipboard copy operation
+- **AND** the cursor blink is reset and the frame is redrawn
 
-#### Scenario: Sidebar is fixed-width on the left
+#### Scenario: Cmd+X is dispatched as cut in wgpu backend
 
-- **WHEN** the layout is rendered into any area at least 40 columns wide
-- **THEN** the sidebar pane occupies the leftmost 28 columns
-- **AND** the remaining columns form the right column containing the tab strip, conversation pane, and input bar
+- **WHEN** the user presses `Cmd+X` while the wgpu window has focus
+- **THEN** `handle_key` routes the event to the clipboard cut operation
+- **AND** the cursor blink is reset and the frame is redrawn
 
-#### Scenario: Tab strip pinned to top of right column
+#### Scenario: Cmd+V is dispatched as paste in wgpu backend
 
-- **WHEN** the layout is rendered
-- **THEN** the tab strip occupies the top 3 rows of the right column
+- **WHEN** the user presses `Cmd+V` while the wgpu window has focus
+- **THEN** `handle_key` routes the event to the clipboard paste operation
+- **AND** the cursor blink is reset and the frame is redrawn
 
-#### Scenario: Input bar pinned to bottom of right column
+### Requirement: Input bar clipboard shortcuts (dev-crossterm)
 
-- **WHEN** the layout is rendered
-- **THEN** the input bar occupies the bottom 3 rows of the right column
+The input bar in the `dev-crossterm` backend SHALL handle `Ctrl+C`, `Ctrl+X`, and `Ctrl+V` as the terminal equivalents for clipboard copy, cut, and paste.
 
-#### Scenario: Conversation pane fills the remainder
+#### Scenario: Ctrl+C copies in crossterm backend
 
-- **WHEN** the layout is rendered
-- **THEN** the conversation pane occupies all rows in the right column not consumed by the tab strip or input bar
+- **WHEN** the user presses `Ctrl+C` in the crossterm backend
+- **THEN** the selected text (if any) is written to the system clipboard
+- **AND** the application does not exit
 
-#### Scenario: Layout adapts to window resize
+#### Scenario: Ctrl+X cuts in crossterm backend
 
-- **WHEN** the render area changes size between draw calls
-- **THEN** the four panes are recomputed against the new area on the next draw without panic
-- **AND** sidebar width and input/tab bar heights remain at their fixed values; the conversation pane absorbs the change
+- **WHEN** the user presses `Ctrl+X` in the crossterm backend
+- **THEN** the selected text (if any) is cut to the system clipboard
 
-### Requirement: Backend-trait-agnostic widgets
+#### Scenario: Ctrl+V pastes in crossterm backend
 
-All widgets in `pi-oven-ui` SHALL be written against `ratatui::backend::Backend` and MUST NOT reference any concrete backend type, so the same code paints under both `dev-wgpu` and `dev-crossterm`.
-
-#### Scenario: Widgets render under dev-wgpu
-
-- **WHEN** the binary built with default features (`dev-wgpu`) calls `pi_oven_ui::render(frame)`
-- **THEN** the four panes are visible in the native window
-
-#### Scenario: Widgets render under dev-crossterm
-
-- **WHEN** the binary built with `--no-default-features --features dev-crossterm` calls `pi_oven_ui::render(frame)`
-- **THEN** the four panes are visible in the host terminal
-
-#### Scenario: pi-oven-ui has no concrete-backend dependency
-
-- **WHEN** `cargo metadata` is consulted for `pi-oven-ui`
-- **THEN** its dependency tree contains neither `pi-oven-render` nor `crossterm`
-
-### Requirement: Pane shells with placeholder content
-
-Each of the four panes SHALL render a bordered shell with a placeholder body so the layout is legible before any real state is wired in.
-
-#### Scenario: Sidebar shows projects placeholder
-
-- **WHEN** the layout is rendered
-- **THEN** the sidebar pane is bordered, has the title `Projects`, and contains the body `(no projects)`
-
-#### Scenario: Tab strip shows no-workspaces placeholder
-
-- **WHEN** the layout is rendered with no workspaces present
-- **THEN** the tab strip pane is bordered and contains the body `(no workspaces)`
-
-#### Scenario: Conversation pane shows empty placeholder
-
-- **WHEN** the layout is rendered
-- **THEN** the conversation pane is bordered, has the title `Conversation`, and contains the body `(empty)`
-
-#### Scenario: Input bar shows prompt placeholder
-
-- **WHEN** the layout is rendered
-- **THEN** the input bar pane is bordered and contains the body `>`
-
-### Requirement: Layout is non-interactive in this slice
-
-The layout SHALL be visually present without a focus model, hotkey routing, or scrollable content. Existing client hotkeys (e.g. `Cmd+W` to quit) MUST continue to work unchanged.
-
-#### Scenario: No pane is highlighted as focused
-
-- **WHEN** the client window has keyboard focus
-- **THEN** no pane renders a focus indicator (highlighted border, accent colour, etc.)
-
-#### Scenario: Cmd+W still quits
-
-- **WHEN** the user presses `Cmd+W` while the client window has focus
-- **THEN** the event loop exits with status zero, exactly as before this change
+- **WHEN** the user presses `Ctrl+V` in the crossterm backend
+- **THEN** clipboard text is inserted at the cursor position
