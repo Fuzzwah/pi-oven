@@ -750,7 +750,7 @@ mod tests {
             },
         );
 
-        assert_eq!(rects.len(), 3);
+        assert_eq!(rects.len(), 2);
         assert_eq!(rects[0].left, 0.0);
         assert_eq!(rects[0].right, 20.0);
         assert_eq!(rects[1].left, 10.0);

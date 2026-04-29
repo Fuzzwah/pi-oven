@@ -91,6 +91,6 @@ impl Grid {
     }
 
     pub fn fill(&mut self, cell: Cell) {
-        self.cells.iter_mut().for_each(|c| *c = cell);
+        self.cells.iter_mut().for_each(|c| *c = cell.clone());
     }
 }
