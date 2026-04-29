@@ -3,11 +3,11 @@
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 
-use crate::{TabBadge, TabCell, TabStatus};
+use crate::{TabCell, TabStatus};
 
 pub fn render_tabs(area: Rect, buf: &mut Buffer, tabs: &[TabCell]) {
     let block = Block::default().borders(Borders::ALL);
@@ -22,96 +22,72 @@ pub fn render_tabs(area: Rect, buf: &mut Buffer, tabs: &[TabCell]) {
         return;
     }
 
-    let cells: Vec<Vec<Span>> = tabs.iter().map(cell_spans).collect();
-    let separator = "  ";
-    let line = pack_cells(cells, separator, inner.width as usize);
+    let line = build_tabs_line(tabs, inner.width as usize);
     Paragraph::new(line).render(inner, buf);
 }
 
 fn cell_spans(cell: &TabCell) -> Vec<Span<'static>> {
-    let dot = match cell.status {
-        TabStatus::Active => "▶ ",
-        TabStatus::Idle => "• ",
-        TabStatus::Attention => "! ",
+    let project_style = match cell.status {
+        TabStatus::Active | TabStatus::Attention => {
+            Style::default().add_modifier(Modifier::BOLD)
+        }
+        TabStatus::Idle => Style::default(),
     };
-    let dot_style = match cell.status {
-        TabStatus::Active => Style::default().fg(Color::Green),
-        TabStatus::Idle => Style::default().add_modifier(Modifier::DIM),
-        TabStatus::Attention => Style::default().fg(Color::Yellow),
-    };
-
-    let mut spans = vec![
-        Span::styled(dot.to_string(), dot_style),
-        Span::raw(format!("[{}] ", cell.idx)),
-        Span::styled(
-            cell.project.clone(),
-            Style::default().add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            format!(" ({})", cell.worktree),
-            Style::default().add_modifier(Modifier::DIM),
-        ),
-    ];
-
-    if let Some(badge) = cell.badge.as_ref() {
-        let (text, style) = match badge {
-            TabBadge::Pr(n) => (
-                format!(" #{}", n),
-                Style::default().fg(Color::Magenta),
-            ),
-            TabBadge::Unread { up, down } => (
-                format!(" ↑{} ↓{}", up, down),
-                Style::default().fg(Color::Cyan),
-            ),
-        };
-        spans.push(Span::styled(text, style));
-    }
-
-    spans
+    vec![
+        Span::styled(format!("[{}]", cell.project), project_style),
+        Span::raw(format!(" ({})", cell.trigger)),
+    ]
 }
 
 fn span_width(spans: &[Span]) -> usize {
     spans.iter().map(|s| s.content.chars().count()).sum()
 }
 
-fn pack_cells(
-    cells: Vec<Vec<Span<'static>>>,
-    separator: &str,
-    max_cols: usize,
-) -> Line<'static> {
+/// Builds the tab strip line. Cells are joined by ` > ` before an `Active`
+/// (or `Attention`) cell and ` - ` before `Idle` cells. The first cell has
+/// no leading separator. When the line exceeds `max_cols`, the rightmost
+/// cells are dropped and a trailing ` …` is appended.
+fn build_tabs_line(tabs: &[TabCell], max_cols: usize) -> Line<'static> {
     let mut out: Vec<Span<'static>> = Vec::new();
     let mut used = 0usize;
-    let sep_w = separator.chars().count();
     let mut truncated = false;
 
-    for (i, cell) in cells.into_iter().enumerate() {
-        let cell_w = span_width(&cell);
-        let needed = if i == 0 { cell_w } else { cell_w + sep_w };
-        if used + needed > max_cols {
+    for (i, cell) in tabs.iter().enumerate() {
+        let spans = cell_spans(cell);
+        let cell_w = span_width(&spans);
+        let sep = if i == 0 {
+            None
+        } else {
+            Some(match cell.status {
+                TabStatus::Active | TabStatus::Attention => " > ".to_string(),
+                TabStatus::Idle => " - ".to_string(),
+            })
+        };
+        let sep_w = sep.as_ref().map(|s| s.chars().count()).unwrap_or(0);
+        if used + sep_w + cell_w > max_cols {
             truncated = true;
             break;
         }
-        if i > 0 {
-            out.push(Span::raw(separator.to_string()));
+        if let Some(s) = sep {
+            out.push(Span::raw(s));
             used += sep_w;
         }
-        out.extend(cell);
+        out.extend(spans);
         used += cell_w;
     }
 
     if truncated {
-        // Reserve room for the ellipsis indicator; trim trailing content as needed.
-        let ellipsis = "…";
-        while used + 1 + sep_w > max_cols && !out.is_empty() {
-            // Drop the last span (or its tail) to make room.
+        let suffix = " …";
+        let suffix_w = suffix.chars().count();
+        while used + suffix_w > max_cols && !out.is_empty() {
             if let Some(last) = out.pop() {
                 used -= last.content.chars().count();
             }
         }
         if used > 0 {
-            out.push(Span::raw(format!("{}{}", separator, ellipsis)));
+            out.push(Span::raw(suffix.to_string()));
         } else {
-            out.push(Span::raw(ellipsis.to_string()));
+            out.push(Span::raw("…".to_string()));
         }
     }
 

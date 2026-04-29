@@ -23,20 +23,19 @@ pub use tabs::render_tabs;
 use ratatui::layout::{Constraint, Layout};
 use ratatui::Frame;
 
-/// Conversation header values shown above the message body.
+/// Conversation header — currently just a title. Placeholder data today;
+/// will be fed by the wire transport once it carries session metadata.
 pub struct ConversationHeader {
     pub title: String,
-    pub elapsed_secs: u64,
-    pub tokens_in: u64,
-    pub tokens_out: u64,
 }
 
-/// Bottom status-bar values.
+/// Bottom status-bar values. Free-form strings so the demo can show generic
+/// placeholder text; the wire-transport slice will tighten the types.
 pub struct StatusBar {
     pub model: String,
-    pub ctx_pct: u8,
+    pub ctx: String,
     pub branch: String,
-    pub pr: Option<u32>,
+    pub pr: Option<String>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -53,18 +52,11 @@ pub enum TabStatus {
 }
 
 #[derive(Clone)]
-pub enum TabBadge {
-    Pr(u32),
-    Unread { up: u32, down: u32 },
-}
-
-#[derive(Clone)]
 pub struct TabCell {
     pub idx: u8,
     pub project: String,
-    pub worktree: String,
+    pub trigger: String,
     pub status: TabStatus,
-    pub badge: Option<TabBadge>,
 }
 
 /// Application state passed into every render call.
@@ -95,59 +87,49 @@ impl Default for AppState {
             cursor_visible: true,
             // MOCK: real values will arrive over the wire transport.
             header: ConversationHeader {
-                title: "Apply clipboard support changes".to_string(),
-                elapsed_secs: 51,
-                tokens_in: 7,
-                tokens_out: 2300,
+                title: "[project 1] Longer Explanation of Feature xyz".to_string(),
             },
             // MOCK: real values will arrive over the wire transport.
             status: StatusBar {
-                model: "Sonnet 4.6".to_string(),
-                ctx_pct: 48,
-                branch: "fuz/apply-clipboard-support".to_string(),
-                pr: Some(9),
+                model: "[Model]".to_string(),
+                ctx: "[context %]".to_string(),
+                branch: "[branch name]".to_string(),
+                pr: Some("[123]".to_string()),
             },
             // MOCK: real workspace tabs will arrive over the wire transport.
             tabs: vec![
                 TabCell {
                     idx: 1,
-                    project: "website".to_string(),
-                    worktree: "safe-jade".to_string(),
+                    project: "project 1".to_string(),
+                    trigger: "issue-123".to_string(),
                     status: TabStatus::Idle,
-                    badge: None,
                 },
                 TabCell {
                     idx: 2,
-                    project: "pi-oven".to_string(),
-                    worktree: "spry-mare".to_string(),
+                    project: "project 1".to_string(),
+                    trigger: "spec-feat-xyz".to_string(),
                     status: TabStatus::Active,
-                    badge: Some(TabBadge::Pr(9)),
                 },
                 TabCell {
                     idx: 3,
-                    project: "conduit".to_string(),
-                    worktree: "slim-rook".to_string(),
+                    project: "project 2".to_string(),
+                    trigger: "spec-add-juice".to_string(),
                     status: TabStatus::Idle,
-                    badge: Some(TabBadge::Pr(130)),
                 },
                 TabCell {
                     idx: 4,
-                    project: "pi-oven".to_string(),
-                    worktree: "soft-lynx".to_string(),
+                    project: "project 2".to_string(),
+                    trigger: "exp-test".to_string(),
                     status: TabStatus::Idle,
-                    badge: Some(TabBadge::Unread { up: 1, down: 2 }),
                 },
             ],
-            // MOCK: legend entries are descriptive only in this slice.
+            // Real hotkeys actually wired in `pi-oven/src/main.rs`.
             legend: vec![
-                ("M-tab/M-S-tab".into(), "next/prev tab".into()),
-                ("C-o".into(), "model".into()),
-                ("C-t".into(), "sidebar".into()),
-                ("C-n".into(), "new project".into()),
-                ("M-S-w".into(), "close".into()),
-                ("M-S-x".into(), "archive".into()),
-                ("C-c".into(), "stop".into()),
-                ("C-q".into(), "quit".into()),
+                ("Cmd+W".into(), "quit".into()),
+                ("Cmd+C".into(), "copy".into()),
+                ("Cmd+X".into(), "cut".into()),
+                ("Cmd+V".into(), "paste".into()),
+                ("Cmd+=/-".into(), "font size".into()),
             ],
             conversation: Vec::new(),
             scroll_offset: 0,
@@ -166,21 +148,16 @@ pub fn render(frame: &mut Frame, state: &mut AppState) {
     let [tabs_area, header_area, conversation_area, input_area, bottom_area] =
         Layout::vertical([
             Constraint::Length(3),
-            Constraint::Length(3),
+            Constraint::Length(1),
             Constraint::Min(0),
             Constraint::Length(3),
-            Constraint::Length(3),
+            Constraint::Length(2),
         ])
         .areas(right_area);
 
-    // Bottom strip: 1 row spacing, 1 row status bar, 1 row legend.
-    let [bottom_spacer, status_area, legend_area] = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
-    ])
-    .areas(bottom_area);
-    let _ = bottom_spacer;
+    // Bottom strip: 1 row status bar, 1 row legend (no leading spacer).
+    let [status_area, legend_area] =
+        Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).areas(bottom_area);
 
     let buf = frame.buffer_mut();
     render_sidebar(sidebar_area, buf);

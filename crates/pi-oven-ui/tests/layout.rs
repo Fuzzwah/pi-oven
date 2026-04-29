@@ -17,8 +17,7 @@ fn row_text(buf: &ratatui::buffer::Buffer, row: u16, cols: std::ops::Range<u16>)
     cols.map(|col| buf.cell((col, row)).unwrap().symbol().to_string()).collect()
 }
 
-/// The sidebar occupies cols 0..28. Its right border is at col 27.
-/// Row 0 = top-right corner `┐`, rows 1..rows-1 = `│`, last row = `┘`.
+/// Sidebar occupies cols 0..28; right border at col 27.
 #[test]
 fn layout_100x30_sidebar_border() {
     let rows = 30u16;
@@ -35,57 +34,42 @@ fn layout_100x30_sidebar_border() {
     assert_eq!(buf.cell((27, rows - 1)).unwrap().symbol(), "┘", "sidebar bottom-right corner");
 }
 
-/// tabs_area top-left starts at (28, 0).
+/// tabs_area top-left at (28, 0).
 #[test]
 fn layout_100x30_tabs_top_border_at_row_0() {
     let buf = render_at(100, 30);
     assert_eq!(buf.cell((28, 0)).unwrap().symbol(), "┌", "tabs top-left corner missing");
 }
 
-/// Header strip starts at row 3 (right under the tab strip's bottom border).
+/// Header strip is row 3 (one row, no spacer); the title is centered + bold there.
 #[test]
-fn layout_100x30_header_below_tabs() {
+fn layout_100x30_header_directly_below_tabs() {
     let buf = render_at(100, 30);
-    // Title is rendered on the second row of the header strip = row 4.
-    let title_row = row_text(&buf, 4, 28..100);
+    let header_row = row_text(&buf, 3, 28..100);
     assert!(
-        title_row.contains("Apply clipboard support changes"),
-        "expected header title on row 4, got {title_row:?}"
+        header_row.contains("[project 1] Longer Explanation of Feature xyz"),
+        "expected centered bold title on row 3, got {header_row:?}"
     );
 }
 
-/// Stats sub-row is on the third row of the header strip = row 5.
-#[test]
-fn layout_100x30_header_stats_row() {
-    let buf = render_at(100, 30);
-    let stats_row = row_text(&buf, 5, 28..100);
-    assert!(stats_row.contains("51s"), "expected '51s' on stats row, got {stats_row:?}");
-    assert!(stats_row.contains("↓7"), "expected '↓7' on stats row, got {stats_row:?}");
-    assert!(
-        stats_row.contains("↑2.3k"),
-        "expected '↑2.3k' on stats row, got {stats_row:?}"
-    );
-}
-
-/// Conversation body sits between the header (rows 3..6) and the input bar (rows 24..27).
-/// Top border at row 6.
+/// Conversation body top border at row 4 (immediately below the 1-row header).
 #[test]
 fn layout_100x30_conversation_top_border() {
     let buf = render_at(100, 30);
     assert_eq!(
-        buf.cell((28, 6)).unwrap().symbol(),
+        buf.cell((28, 4)).unwrap().symbol(),
         "┌",
-        "conversation top-left corner missing at row 6"
+        "conversation top-left corner missing at row 4"
     );
 }
 
-/// Input bar sits above the bottom strip. With rows=30 and bottom strip = 3 rows,
-/// the input bar's top border is at row 30 - 3 - 3 = 24.
+/// Input bar sits directly above the 2-row bottom strip. With rows=30,
+/// input top border is at row 30 - 2 - 3 = 25.
 #[test]
 fn layout_100x30_input_above_bottom_strip() {
     let rows = 30u16;
     let buf = render_at(100, rows);
-    let top_row = rows - 3 - 3;
+    let top_row = rows - 2 - 3;
     assert_eq!(
         buf.cell((28, top_row)).unwrap().symbol(),
         "┌",
@@ -93,92 +77,86 @@ fn layout_100x30_input_above_bottom_strip() {
     );
 }
 
-/// Status bar row contains the model name, ctx%, PR badge, and branch.
-/// Bottom strip occupies the last 3 rows: row rows-3 = spacer, rows-2 = status, rows-1 = legend.
+/// Status bar row contains model, context, PR#, and branch joined with ` - `.
+/// Bottom strip occupies the last 2 rows: row rows-2 = status, row rows-1 = legend.
 #[test]
 fn layout_100x30_status_bar() {
     let rows = 30u16;
     let buf = render_at(100, rows);
     let status_row = row_text(&buf, rows - 2, 28..100);
     assert!(
-        status_row.contains("Sonnet 4.6"),
-        "expected 'Sonnet 4.6' on status row, got {status_row:?}"
+        status_row.contains("[Model]"),
+        "expected '[Model]' on status row, got {status_row:?}"
     );
     assert!(
-        status_row.contains("ctx:48%"),
-        "expected 'ctx:48%' on status row, got {status_row:?}"
+        status_row.contains("[context %]"),
+        "expected '[context %]' on status row, got {status_row:?}"
     );
     assert!(
-        status_row.contains("PR #9"),
-        "expected 'PR #9' on status row, got {status_row:?}"
+        status_row.contains("PR# [123]"),
+        "expected 'PR# [123]' on status row, got {status_row:?}"
     );
     assert!(
-        status_row.contains("fuz/apply-clipboard-support"),
-        "expected branch on status row, got {status_row:?}"
+        status_row.contains("[branch name]"),
+        "expected '[branch name]' on status row, got {status_row:?}"
+    );
+    assert!(
+        status_row.contains(" - "),
+        "expected ' - ' separator on status row, got {status_row:?}"
     );
 }
 
-/// Legend row contains key/action pairs (truncates with `…` when narrow).
+/// Legend row contains real hotkeys.
 #[test]
 fn layout_100x30_legend_row() {
     let rows = 30u16;
     let buf = render_at(100, rows);
     let legend_row = row_text(&buf, rows - 1, 28..100);
     assert!(
-        legend_row.contains("M-tab"),
-        "expected 'M-tab' on legend row, got {legend_row:?}"
-    );
-    // 100x30 leaves 72 inner cols on the right column — the full legend overflows
-    // and is truncated with an ellipsis indicator.
-    assert!(
-        legend_row.contains("…"),
-        "expected '…' truncation indicator on legend row, got {legend_row:?}"
-    );
-}
-
-/// At a wide window the full legend (including the trailing `quit` entry) fits.
-#[test]
-fn layout_220x30_full_legend_visible() {
-    let rows = 30u16;
-    let buf = render_at(220, rows);
-    let legend_row = row_text(&buf, rows - 1, 28..220);
-    assert!(
-        legend_row.contains("M-tab"),
-        "expected 'M-tab' on wide legend row, got {legend_row:?}"
+        legend_row.contains("Cmd+W"),
+        "expected 'Cmd+W' on legend row, got {legend_row:?}"
     );
     assert!(
         legend_row.contains("quit"),
-        "expected 'quit' on wide legend row, got {legend_row:?}"
+        "expected 'quit' on legend row, got {legend_row:?}"
+    );
+    assert!(
+        legend_row.contains("Cmd+C"),
+        "expected 'Cmd+C' on legend row, got {legend_row:?}"
     );
 }
 
-/// Tab strip renders mock cells from `AppState.tabs` on row 1 (inner row).
+/// Tab strip renders mock cells with `[project N] (trigger)` form and
+/// `>` before the active tab, `-` between idle tabs. Uses 150 cols so the
+/// full mock list fits without truncation.
 #[test]
-fn layout_100x30_tab_cells_visible() {
-    let buf = render_at(100, 30);
-    let tabs_row = row_text(&buf, 1, 28..100);
-    // At least one active dot and the project name from the second mock tab.
+fn layout_150x30_tab_cells_visible() {
+    let buf = render_at(150, 30);
+    let tabs_row = row_text(&buf, 1, 28..150);
     assert!(
-        tabs_row.contains("▶"),
-        "expected active status dot on tabs row, got {tabs_row:?}"
+        tabs_row.contains("[project 1] (issue-123)"),
+        "expected first tab cell, got {tabs_row:?}"
     );
     assert!(
-        tabs_row.contains("pi-oven"),
-        "expected 'pi-oven' on tabs row, got {tabs_row:?}"
+        tabs_row.contains(" > [project 1] (spec-feat-xyz)"),
+        "expected '>' separator before active cell, got {tabs_row:?}"
     );
     assert!(
-        tabs_row.contains("#9"),
-        "expected PR badge '#9' on tabs row, got {tabs_row:?}"
+        tabs_row.contains(" - [project 2] (spec-add-juice)"),
+        "expected '-' separator between idle cells, got {tabs_row:?}"
+    );
+    assert!(
+        tabs_row.contains(" - [project 2] (exp-test)"),
+        "expected last tab cell separated by '-', got {tabs_row:?}"
     );
 }
 
-/// At 200×60, sidebar is still 28 cols and the input bar's top is at row 60-6 = 54.
+/// At 200×60, sidebar is still 28 cols and the input bar's top is at row 60-5 = 55.
 #[test]
 fn layout_200x60_fixed_strips() {
     let rows = 60u16;
     let buf = render_at(200, rows);
 
-    // Sidebar right border full height.
     assert_eq!(buf.cell((27, 0)).unwrap().symbol(), "┐");
     for row in 1..rows - 1 {
         assert_eq!(
@@ -189,22 +167,20 @@ fn layout_200x60_fixed_strips() {
     }
     assert_eq!(buf.cell((27, rows - 1)).unwrap().symbol(), "┘");
 
-    // Input top-left at row 54.
-    assert_eq!(buf.cell((28, rows - 6)).unwrap().symbol(), "┌");
+    // Input top-left at row rows - 2 - 3 = 55.
+    assert_eq!(buf.cell((28, rows - 5)).unwrap().symbol(), "┌");
 }
 
 /// Small window (60×20) does not panic and the conversation pane has at least one row.
-/// At rows=20: tabs(3) + header(3) + body(?) + input(3) + bottom(3) = 12 fixed; body=8.
+/// Fixed strips total 3 + 1 + 3 + 2 = 9; conversation gets 11 at rows=20.
 #[test]
 fn layout_60x20_no_panic() {
     let rows = 20u16;
     let buf = render_at(60, rows);
-    // Sidebar is still bordered correctly.
     assert_eq!(buf.cell((27, 0)).unwrap().symbol(), "┐");
-    // Conversation body top border at row 6 must still exist.
-    assert_eq!(buf.cell((28, 6)).unwrap().symbol(), "┌");
-    // Conversation pane should be at least one row tall.
-    let conv_height = rows.saturating_sub(3 + 3 + 3 + 3);
+    // Conversation body top border at row 4.
+    assert_eq!(buf.cell((28, 4)).unwrap().symbol(), "┌");
+    let conv_height = rows.saturating_sub(3 + 1 + 3 + 2);
     assert!(conv_height >= 1, "conversation pane must have at least 1 row");
 }
 
@@ -222,14 +198,14 @@ fn layout_100x30_sidebar_placeholder() {
 #[test]
 fn layout_100x30_conversation_placeholder() {
     let buf = render_at(100, 30);
-    // "Conversation" title is on the top border row (row 6).
-    let conv_title = row_text(&buf, 6, 28..100);
+    // "Conversation" title is on the top border row (row 4).
+    let conv_title = row_text(&buf, 4, 28..100);
     assert!(
         conv_title.contains("Conversation"),
         "'Conversation' title not found: {conv_title:?}"
     );
     // "(empty)" is in the inner body just below.
-    let conv_body = row_text(&buf, 7, 29..99);
+    let conv_body = row_text(&buf, 5, 29..99);
     assert!(
         conv_body.contains("(empty)"),
         "'(empty)' not found: {conv_body:?}"
@@ -252,17 +228,15 @@ fn layout_100x30_empty_tabs_placeholder() {
 /// When tab cells are wider than the area, the rightmost cells truncate with `…`.
 #[test]
 fn tabs_truncate_overflow() {
-    use pi_oven_ui::{TabBadge, TabCell, TabStatus};
+    use pi_oven_ui::{TabCell, TabStatus};
 
     let mut state = AppState::default();
-    // Replace tabs with a long list of wide cells that will exceed any reasonable inner width.
     state.tabs = (0..20u8)
         .map(|i| TabCell {
             idx: i + 1,
             project: format!("project-with-long-name-{i}"),
-            worktree: format!("worktree-with-long-name-{i}"),
+            trigger: format!("trigger-with-long-name-{i}"),
             status: TabStatus::Idle,
-            badge: Some(TabBadge::Pr(i as u32 + 100)),
         })
         .collect();
 

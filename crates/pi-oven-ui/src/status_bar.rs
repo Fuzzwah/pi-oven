@@ -1,9 +1,10 @@
 // Bottom status bar. Reads from `StatusBar` placeholder fields; real values
-// will arrive over the wire transport.
+// will arrive over the wire transport. Format:
+//   `<model> - <ctx> - PR# <pr> - <branch>`  (all bold; PR segment is optional)
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Widget};
 
@@ -14,32 +15,20 @@ pub fn render_status_bar(area: Rect, buf: &mut Buffer, status: &StatusBar) {
         return;
     }
 
-    let sep = " · ";
-    let mut spans: Vec<Span<'static>> = Vec::new();
-    spans.push(Span::styled(
-        status.model.clone(),
+    let sep = " - ";
+    let mut segments: Vec<String> = vec![status.model.clone(), status.ctx.clone()];
+    if let Some(pr) = status.pr.as_ref() {
+        segments.push(format!("PR# {}", pr));
+    }
+    segments.push(status.branch.clone());
+
+    let raw = segments.join(sep);
+    let truncated = truncate_to_width(&raw, area.width as usize);
+    let line = Line::from(Span::styled(
+        truncated,
         Style::default().add_modifier(Modifier::BOLD),
     ));
-    spans.push(Span::raw(sep.to_string()));
-    spans.push(Span::raw(format!("ctx:{}%", status.ctx_pct)));
-    if let Some(pr) = status.pr {
-        spans.push(Span::raw(sep.to_string()));
-        spans.push(Span::styled(
-            format!("PR #{}", pr),
-            Style::default().fg(Color::Magenta),
-        ));
-    }
-    spans.push(Span::raw(sep.to_string()));
-    let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
-    let max_cols = area.width as usize;
-    let branch = if used >= max_cols {
-        String::new()
-    } else {
-        truncate_to_width(&status.branch, max_cols - used)
-    };
-    spans.push(Span::styled(branch, Style::default().add_modifier(Modifier::DIM)));
-
-    Paragraph::new(Line::from(spans)).render(area, buf);
+    Paragraph::new(line).render(area, buf);
 }
 
 fn truncate_to_width(s: &str, max_cols: usize) -> String {

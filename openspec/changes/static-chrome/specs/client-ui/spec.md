@@ -2,7 +2,7 @@
 
 ### Requirement: Top-level pane layout
 
-The client UI SHALL compose six regions — sidebar, tab strip, conversation header, conversation body, input bar, and bottom strip — into a single layout that fills the available render area. The layout SHALL be exposed from `pi-oven-ui` as a single render entrypoint that the binary calls inside ratatui's draw closure. The sidebar occupies the leftmost 28 columns; the remaining columns form the right column whose vertical strips are, top-to-bottom: tab strip (3 rows), conversation header (3 rows), conversation body (remainder), input bar (3 rows), bottom strip (3 rows containing status bar and hotkey legend).
+The client UI SHALL compose six regions — sidebar, tab strip, conversation header, conversation body, input bar, and bottom strip — into a single layout that fills the available render area. The layout SHALL be exposed from `pi-oven-ui` as a single render entrypoint that the binary calls inside ratatui's draw closure. The sidebar occupies the leftmost 28 columns; the remaining columns form the right column whose vertical strips are, top-to-bottom: tab strip (3 rows), conversation header (1 row), conversation body (remainder), input bar (3 rows), bottom strip (2 rows containing status bar and hotkey legend, with no leading spacer).
 
 #### Scenario: Single render entrypoint exists
 
@@ -21,20 +21,22 @@ The client UI SHALL compose six regions — sidebar, tab strip, conversation hea
 - **WHEN** the layout is rendered
 - **THEN** the tab strip occupies rows 1–3 of the right column (zero-indexed: rows 0..3)
 
-#### Scenario: Conversation header sits below the tab strip
+#### Scenario: Conversation header sits directly below the tab strip
 
 - **WHEN** the layout is rendered
-- **THEN** the conversation header occupies rows 4–6 of the right column (zero-indexed: rows 3..6)
+- **THEN** the conversation header occupies the single row immediately below the tab strip's bottom border (zero-indexed: row 3)
+- **AND** there is no blank spacer row between the tab strip and the header
 
 #### Scenario: Bottom strip pinned to the bottom of the right column
 
 - **WHEN** the layout is rendered
-- **THEN** the bottom strip occupies the bottom 3 rows of the right column
+- **THEN** the bottom strip occupies the bottom 2 rows of the right column
 
-#### Scenario: Input bar sits above the bottom strip
+#### Scenario: Input bar sits directly above the bottom strip
 
 - **WHEN** the layout is rendered
 - **THEN** the input bar occupies the 3 rows immediately above the bottom strip
+- **AND** there is no blank spacer row between the input bar and the bottom strip
 
 #### Scenario: Conversation body fills the remainder
 
@@ -45,17 +47,17 @@ The client UI SHALL compose six regions — sidebar, tab strip, conversation hea
 
 - **WHEN** the render area changes size between draw calls
 - **THEN** the six regions are recomputed against the new area on the next draw without panic
-- **AND** sidebar width and the four fixed-height strips (tabs, header, input, bottom) remain at their fixed values; the conversation body absorbs the change
+- **AND** sidebar width and the four fixed-height strips (tabs 3, header 1, input 3, bottom 2) remain at their fixed values; the conversation body absorbs the change
 
 #### Scenario: Layout degrades gracefully on small windows
 
-- **WHEN** the layout is rendered into an area shorter than 13 rows (the total fixed-strip height plus a single conversation row)
+- **WHEN** the layout is rendered into an area shorter than 10 rows (the total fixed-strip height plus a single conversation row)
 - **THEN** strips are still drawn in order from the top until vertical space is exhausted
 - **AND** no panic occurs; remaining strips are clipped or omitted by ratatui's normal layout behaviour
 
 ### Requirement: Pane shells with placeholder content
 
-Each region SHALL render a placeholder body keyed off `AppState` so the layout is legible before any wire data is connected. The four pre-existing panes (sidebar, tab strip, conversation body, input bar) keep bordered shells; the conversation header and bottom strip MAY use lighter framing as defined by their own requirements.
+Each region SHALL render a placeholder body keyed off `AppState` so the layout is legible before any wire data is connected. The four pre-existing panes (sidebar, tab strip, conversation body, input bar) keep bordered shells; the conversation header and bottom strip render unframed text rows.
 
 #### Scenario: Sidebar shows projects placeholder
 
@@ -65,7 +67,7 @@ Each region SHALL render a placeholder body keyed off `AppState` so the layout i
 #### Scenario: Tab strip shows mocked workspace tabs
 
 - **WHEN** the layout is rendered with one or more entries in `AppState.tabs`
-- **THEN** the tab strip pane renders a tab cell for each entry as defined by the **Tab strip cells** requirement
+- **THEN** the tab strip pane renders cells for each entry as defined by the **Tab strip cells** requirement
 - **AND** the empty-state placeholder is not shown
 
 #### Scenario: Tab strip shows no-workspaces placeholder when empty
@@ -87,17 +89,17 @@ Each region SHALL render a placeholder body keyed off `AppState` so the layout i
 
 ### Requirement: Application state carries chrome placeholders
 
-`AppState` SHALL carry typed placeholder fields backing the conversation header, status bar, tab strip cells, and hotkey legend. `AppState::default()` SHALL populate these fields with hard-coded demo values that match the visual silhouette in the project's reference UX, so the layout renders meaningful content without any wire transport.
+`AppState` SHALL carry typed placeholder fields backing the conversation header, status bar, tab strip cells, and hotkey legend. `AppState::default()` SHALL populate these fields with hard-coded generic placeholder values (e.g. `[project N]`, `[Model]`, `[branch name]`) so the layout renders meaningful content without any wire transport, while making it visually obvious that the values are not real session data.
 
-#### Scenario: AppState exposes header placeholders
+#### Scenario: AppState exposes a header title
 
 - **WHEN** code in `pi-oven-ui` constructs `AppState::default()`
-- **THEN** the resulting state has a `header` field holding a non-empty title string and numeric values for elapsed time and token counts
+- **THEN** the resulting state has a `header` field holding a non-empty title string
 
 #### Scenario: AppState exposes status-bar placeholders
 
 - **WHEN** code in `pi-oven-ui` constructs `AppState::default()`
-- **THEN** the resulting state has a `status` field holding a non-empty model name, a `ctx_pct` value in `0..=100`, a non-empty branch string, and either `Some(pr)` or `None`
+- **THEN** the resulting state has a `status` field holding non-empty `model`, `ctx`, and `branch` strings, plus an `Option`-typed `pr` that is `Some` for the demo
 
 #### Scenario: AppState exposes tab cells
 
@@ -107,21 +109,16 @@ Each region SHALL render a placeholder body keyed off `AppState` so the layout i
 #### Scenario: AppState exposes legend entries
 
 - **WHEN** code in `pi-oven-ui` constructs `AppState::default()`
-- **THEN** the resulting state has a `legend` field holding a non-empty ordered list of `(keys, action)` pairs
+- **THEN** the resulting state has a `legend` field holding a non-empty ordered list of `(keys, action)` pairs that correspond to hotkeys actually wired in the binary
 
 ### Requirement: Conversation header strip
 
-The conversation header strip SHALL render a 3-row pane between the tab strip and the conversation body. Row 1 is reserved for top spacing or a separator. Row 2 SHALL display the header title from `AppState.header.title` left-aligned. Row 3 SHALL display a status sub-row composed of the elapsed time and token counts from `AppState.header`, formatted as a single line of segments separated by `·`.
+The conversation header strip SHALL render a single row directly below the tab strip displaying the title from `AppState.header.title`, centered and bold. There SHALL be no separate stats sub-row or leading spacer in this slice.
 
-#### Scenario: Header renders the title
+#### Scenario: Header renders a centered, bold title
 
-- **WHEN** the layout is rendered with `AppState.header.title = "Apply clipboard support changes"`
-- **THEN** the conversation header strip displays that exact text on its title row, left-aligned within the strip
-
-#### Scenario: Header renders elapsed time and token counts
-
-- **WHEN** the layout is rendered with `AppState.header` set to `{ elapsed_secs: 51, tokens_in: 7, tokens_out: 2300, .. }`
-- **THEN** the conversation header strip displays a status sub-row containing `51s`, `↓7`, and `↑2.3k` (or `↑2300`), each as a distinct segment separated by `·`
+- **WHEN** the layout is rendered with `AppState.header.title = "[project 1] Longer Explanation of Feature xyz"`
+- **THEN** the conversation header strip displays that exact text on its single row, centered within the strip's width and styled bold
 
 #### Scenario: Header truncates a long title
 
@@ -130,81 +127,78 @@ The conversation header strip SHALL render a 3-row pane between the tab strip an
 
 ### Requirement: Tab strip cells
 
-When `AppState.tabs` is non-empty, the tab strip SHALL render one cell per entry, packed left-to-right with a separator between cells. Each cell SHALL include, in order: a status dot keyed to the cell's `TabStatus` (`▶` for `Active`, `•` for `Idle`, `!` for `Attention`); the bracketed index `[N]` from the cell's `idx`; the project name; the worktree name in parentheses; and an optional badge.
+When `AppState.tabs` is non-empty, the tab strip SHALL render one cell per entry, packed left-to-right with separators that vary by the next cell's status. Each cell SHALL be of the form `[<project>] (<trigger>)`, where `<project>` and `<trigger>` come from the cell's fields and the project segment is rendered bold for `Active` (and `Attention`) cells. The separator before a cell whose status is `Active` (or `Attention`) SHALL be ` > `; the separator before any other cell SHALL be ` - `. The first cell has no leading separator.
 
-#### Scenario: Cell shows status dot, index, project, and worktree
+#### Scenario: Cell shows project and trigger
 
-- **WHEN** the layout is rendered with one tab cell `{ idx: 2, project: "pi-oven", worktree: "spry-mare", status: Active, badge: None }`
-- **THEN** the tab strip displays a cell containing the substring `▶ [2] pi-oven (spry-mare)` in that order
+- **WHEN** the layout is rendered with one tab cell `{ idx: 1, project: "project 1", trigger: "issue-123", status: Idle }`
+- **THEN** the tab strip displays a cell containing the substring `[project 1] (issue-123)` in that order
 
-#### Scenario: Idle cells use the idle dot
+#### Scenario: Active separator points at the active cell
 
-- **WHEN** the layout is rendered with one tab cell whose `status` is `Idle`
-- **THEN** that cell's status dot is `•`, not `▶`
+- **WHEN** the layout is rendered with two tab cells where the second has `status: Active`
+- **THEN** the tab strip rendered line contains the substring ` > ` between the two cells
+- **AND** does not contain ` - ` between those cells
 
-#### Scenario: Cell renders a PR badge
+#### Scenario: Idle separator joins consecutive idle cells
 
-- **WHEN** the layout is rendered with one tab cell whose `badge` is `TabBadge::Pr(9)`
-- **THEN** that cell's rendered line contains the substring `#9`
-
-#### Scenario: Cell renders an unread badge
-
-- **WHEN** the layout is rendered with one tab cell whose `badge` is `TabBadge::Unread { up: 3, down: 2 }`
-- **THEN** that cell's rendered line contains the substring `↑3` and the substring `↓2`
+- **WHEN** the layout is rendered with three or more idle cells in sequence
+- **THEN** the tab strip rendered line contains ` - ` between each pair of consecutive idle cells
 
 #### Scenario: Tab strip truncates rightmost cells when overflowing
 
-- **WHEN** the total rendered width of all tab cells exceeds the available column count
+- **WHEN** the total rendered width of all tab cells and separators exceeds the available column count
 - **THEN** cells closer to the left edge are preserved
 - **AND** the rightmost overflowing cells are replaced by a trailing ellipsis indicator (`…`) without panicking or wrapping
 
 ### Requirement: Bottom status bar
 
-The bottom strip's status bar SHALL render a single row of `·`-separated segments showing, in order: the model name from `AppState.status.model`; the literal `ctx:NN%` formed from `AppState.status.ctx_pct`; the PR badge `PR #NN` when `AppState.status.pr` is `Some`; and the branch name from `AppState.status.branch`.
+The bottom strip's status bar SHALL render a single bold row of `-`-separated segments showing, in order: the model from `AppState.status.model`; the context value from `AppState.status.ctx`; the PR badge `PR# <pr>` when `AppState.status.pr` is `Some`; and the branch from `AppState.status.branch`. The entire row SHALL be styled bold.
 
-#### Scenario: Status bar shows model and ctx%
+#### Scenario: Status bar shows model and context
 
-- **WHEN** the layout is rendered with `AppState.status.model = "Sonnet 4.6"` and `ctx_pct = 48`
-- **THEN** the status bar contains the substrings `Sonnet 4.6` and `ctx:48%`, in that left-to-right order, separated by content that includes `·`
+- **WHEN** the layout is rendered with `AppState.status.model = "[Model]"` and `AppState.status.ctx = "[context %]"`
+- **THEN** the status bar row contains the substrings `[Model]` and `[context %]`, in that left-to-right order, separated by ` - `
 
 #### Scenario: Status bar shows PR badge when present
 
-- **WHEN** the layout is rendered with `AppState.status.pr = Some(9)`
-- **THEN** the status bar contains the substring `PR #9`
+- **WHEN** the layout is rendered with `AppState.status.pr = Some("[123]")`
+- **THEN** the status bar contains the substring `PR# [123]`
 
 #### Scenario: Status bar omits PR badge when absent
 
 - **WHEN** the layout is rendered with `AppState.status.pr = None`
-- **THEN** the status bar contains no `PR #` substring
+- **THEN** the status bar contains no `PR#` substring
 
-#### Scenario: Status bar shows branch name
+#### Scenario: Status bar shows branch
 
-- **WHEN** the layout is rendered with `AppState.status.branch = "fuz/apply-clipboard-support"`
-- **THEN** the status bar contains the substring `fuz/apply-clipboard-support`
+- **WHEN** the layout is rendered with `AppState.status.branch = "[branch name]"`
+- **THEN** the status bar contains the substring `[branch name]`
 
 ### Requirement: Hotkey legend
 
-The bottom strip's hotkey legend SHALL render a single row beneath the status bar showing each entry from `AppState.legend` as `<keys> <action>` pairs separated by whitespace. The legend is descriptive only; this slice does not route any of the listed hotkeys.
+The bottom strip's hotkey legend SHALL render a single row beneath the status bar showing each entry from `AppState.legend` as `<keys> <action>` pairs separated by whitespace. The legend SHALL list only hotkeys that are actually wired in the binary so it doubles as a check on what works today; this slice does not route any new hotkeys via the legend itself.
 
-#### Scenario: Legend renders all entries
+#### Scenario: Legend renders entries from real hotkeys
 
-- **WHEN** the layout is rendered with `AppState.legend` containing the pairs `("M-tab/M-S-tab", "next/prev tab")` and `("C-q", "quit")`
-- **THEN** the legend row contains both pairs in left-to-right order, with the keys and action of each pair adjacent
+- **WHEN** the layout is rendered with `AppState.legend` populated by `AppState::default()`
+- **THEN** the legend row contains the substring `Cmd+W` paired with `quit`
+- **AND** the legend row contains a substring identifying the clipboard hotkeys (e.g. `Cmd+C`, `Cmd+V`)
 
 #### Scenario: Legend truncates when overflowing
 
 - **WHEN** the rendered legend would exceed the available column count
 - **THEN** the rightmost entries are truncated with a trailing `…` so the row fits without wrapping
 
-#### Scenario: Legend hotkeys are not interactive in this slice
+#### Scenario: Legend hotkeys retain their existing wiring
 
-- **WHEN** the user presses any key listed in the legend (other than `Cmd+W`, which retains its existing quit behaviour)
-- **THEN** the layout state is unchanged
-- **AND** no error is produced
+- **WHEN** the user presses any hotkey listed in the legend
+- **THEN** the existing handler in the binary continues to execute as before this change
+- **AND** the legend itself does not introduce new key handlers
 
 ### Requirement: New chrome is non-interactive in this slice
 
-The conversation header, tab strip cells, status bar, and hotkey legend SHALL be visually present without focus indicators, hotkey routing, or selection state. Existing client hotkeys (`Cmd+W` to quit, `Cmd+C`/`Cmd+V`/`Cmd+X` clipboard handling on the input bar) MUST continue to work unchanged.
+The conversation header, tab strip cells, status bar, and hotkey legend SHALL be visually present without focus indicators, hotkey routing, or selection state. Existing client hotkeys (`Cmd+W` to quit, `Cmd+=`/`Cmd+-` to adjust font size, `Cmd+C`/`Cmd+V`/`Cmd+X` clipboard handling on the input bar) MUST continue to work unchanged.
 
 #### Scenario: No chrome region renders a focus indicator
 
