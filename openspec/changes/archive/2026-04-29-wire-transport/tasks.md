@@ -79,8 +79,8 @@
 ## 10. Documentation & manual verification
 
 - [x] 10.1 Update [README.md](README.md) Development section with: `PI_OVEN_SHARED_KEY` env var requirement, sample `server.toml` `[net]` block, default `listen_addr`, how to override server URL on the client
-- [ ] 10.2 Manual verification: `pnpm --filter pi-oven-server dev` starts; `RUST_LOG=pi_oven_net=debug,info cargo run -p pi-oven` logs `connecting → authenticated`; the server NDJSON log shows the upgrade and Hello/Welcome
-- [ ] 10.3 Manual verification: relaunch the .app while the first instance is still connected; confirm the first sees `replaced` (close 4002) in its log and the second connects cleanly
-- [ ] 10.4 Manual verification: stop the server (`Ctrl+C`); confirm the client logs `disconnected: <reason>` and starts reconnect attempts with growing backoff in the log
-- [ ] 10.5 Manual verification: set `PI_OVEN_SHARED_KEY=wrong` on the client; relaunch; confirm `AuthFailed` and NO further reconnect attempts
-- [ ] 10.6 Manual verification: deploy the new server build to p330 (`git pull && pnpm install && pnpm --filter pi-oven-server build && systemctl --user restart pi-oven-server`); from the laptop, point `PI_OVEN_SERVER_URL=ws://10.1.1.232:7878` and verify Hello/Welcome over the LAN
+- [x] 10.2 Manual verification: `pnpm --filter pi-oven-server dev` starts; `RUST_LOG=pi_oven_net=debug,info cargo run -p pi-oven` logs `connecting → authenticated`; the server NDJSON log shows the upgrade and Hello/Welcome
+- [x] 10.3 Manual verification: relaunch the .app while the first instance is still connected; confirm the first sees `replaced` (close 4002) in its log and the second connects cleanly
+- [x] 10.4 Manual verification: stop the server (`Ctrl+C`); confirm the client logs `disconnected: <reason>` and starts reconnect attempts with growing backoff in the log
+- [x] 10.5 Manual verification: set `PI_OVEN_SHARED_KEY=wrong` on the client; relaunch; confirm `AuthFailed` and NO further reconnect attempts
+- [x] 10.6 Manual verification: deploy the new server build to p330 (`git pull && pnpm install && pnpm --filter pi-oven-server build && systemctl --user restart pi-oven-server`); from the laptop, point `PI_OVEN_SERVER_URL=ws://10.1.1.232:7878` and verify Hello/Welcome over the LAN

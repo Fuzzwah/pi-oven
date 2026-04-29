@@ -1,3 +1,5 @@
-//! pi-oven WebSocket client and reconnect/replay logic. Stub for the
-//! scaffold-runtime change; real client lands alongside the WebSocket transport
-//! change.
+pub mod client;
+pub mod reconnect;
+
+pub use client::{Client, ClientHandle, CloseInfo};
+pub use reconnect::{start as start_reconnecting, ConnectionState, ReconnectHandle};

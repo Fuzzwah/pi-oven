@@ -2,11 +2,12 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import type { Logger } from "pino";
 import type { Database } from "better-sqlite3";
-import { loadConfig, type ServerConfig } from "./config.js";
+import { loadConfig, type ServerConfig, ConfigMissingFieldError } from "./config.js";
 import { acquireLock, type ReleaseLock } from "./lock.js";
 import { initLogger } from "./log.js";
 import { openDb } from "./state/db.js";
 import { migrate } from "./state/migrate.js";
+import { startListener, type ListenerHandle } from "./net/server.js";
 
 const VERSION = "0.0.0";
 
@@ -16,6 +17,7 @@ const MIGRATIONS_DIR = join(__dirname, "state", "migrations");
 let logger: Logger | undefined;
 let db: Database | undefined;
 let release: ReleaseLock | undefined;
+let listener: ListenerHandle | undefined;
 
 async function shutdown(signal: NodeJS.Signals): Promise<void> {
   if (logger) {
@@ -24,6 +26,10 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
       (logger as unknown as { flush: () => void }).flush();
     } catch { /* ignore */ }
   }
+  // Close listener before DB so connected clients get a clean close (task 5.3).
+  try {
+    await listener?.close();
+  } catch { /* ignore */ }
   try {
     db?.close();
   } catch { /* ignore */ }
@@ -71,8 +77,18 @@ async function boot(): Promise<void> {
       logger.debug("no pending migrations");
     }
 
+    // Listener starts after migrations succeed, before "ready" (tasks 5.1, D8).
+    step = "bind";
+    listener = await startListener({
+      listen_addr: cfg.net.listen_addr,
+      shared_key: cfg.net.shared_key,
+      origin_allowlist: cfg.net.origin_allowlist,
+      allow_null_origin: cfg.net.allow_null_origin,
+      logger,
+    });
+
     logger.info(
-      { version: VERSION, data_dir: cfg.data_dir },
+      { version: VERSION, data_dir: cfg.data_dir, listen_addr: cfg.net.listen_addr },
       "ready",
     );
 
@@ -83,6 +99,10 @@ async function boot(): Promise<void> {
     // down along with everything else.
     setInterval(() => {}, 1 << 30);
   } catch (err) {
+    // Use the field name as step for ConfigMissingFieldError (task 5.4 / 3.4).
+    if (err instanceof ConfigMissingFieldError) {
+      step = err.field;
+    }
     const message = (err as Error).message ?? String(err);
     if (logger) {
       logger.error({ step, err: message }, "boot failed");
