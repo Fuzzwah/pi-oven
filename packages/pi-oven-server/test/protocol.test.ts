@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, it, expect } from "vitest";
 import {
   decodeMsg,
@@ -10,6 +13,8 @@ import {
 } from "../src/protocol.js";
 import type { Msg } from "../src/protocol.js";
 
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
 // Same fixture bytes used in crates/pi-oven-protocol/tests/msg.rs.
 const HELLO_FIXTURE = `{"type":"Hello","key":"fixture-key","client_version":"0.1.0"}`;
 
@@ -21,7 +26,7 @@ describe("encodeMsg / decodeMsg round-trip", () => {
   });
 
   it("Welcome", () => {
-    const msg: Msg = { type: "Welcome", server_version: "1.2.3" };
+    const msg: Msg = { type: "Welcome", server_version: "1.2.3", workspaces: [] };
     expect(decodeMsg(encodeMsg(msg))).toEqual(msg);
   });
 
@@ -94,4 +99,29 @@ describe("cross-language fixture (task 2.6)", () => {
     const msg2 = decodeMsg(encodeMsg(msg));
     expect(msg2).toEqual(msg);
   });
+});
+
+describe("new message variant fixture round-trips (task 1.5)", () => {
+  const fixturesDir = join(__dirname, "fixtures", "protocol");
+  const variants = [
+    "Send",
+    "Abort",
+    "AgentEvent",
+    "AgentStatus",
+    "Resume",
+    "ReplayBatch",
+    "ErrorEvent",
+    "Welcome",
+  ];
+
+  for (const name of variants) {
+    it(`${name} round-trips`, () => {
+      const raw = readFileSync(join(fixturesDir, `${name}.json`), "utf8").trim();
+      const msg = decodeMsg(raw);
+      expect(msg, `${name}.json failed to decode`).not.toBeNull();
+      const reencoded = encodeMsg(msg!);
+      const rt = decodeMsg(reencoded);
+      expect(rt).toEqual(msg);
+    });
+  }
 });

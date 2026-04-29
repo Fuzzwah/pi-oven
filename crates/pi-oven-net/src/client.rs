@@ -55,13 +55,13 @@ impl Client {
             .context("send Hello")?;
 
         // Wait for Welcome (or AuthFailed / close).
-        loop {
+        let welcome: Msg = loop {
             match read.next().await {
                 Some(Ok(Message::Text(text))) => {
                     let msg: Msg = serde_json::from_str(&text)
                         .context("parse server message during handshake")?;
                     match msg {
-                        Msg::Welcome { .. } => break,
+                        Msg::Welcome { .. } => break msg,
                         Msg::AuthFailed { reason } => {
                             return Err(anyhow!("auth failed: {reason}"));
                         }
@@ -81,12 +81,15 @@ impl Client {
                 Some(Err(e)) => return Err(e.into()),
                 None => return Err(anyhow!("connection closed before Welcome")),
             }
-        }
+        };
 
         // Handshake succeeded — wire up channels.
         let (out_tx, mut out_rx) = mpsc::channel::<Msg>(64);
         let (in_tx, in_rx) = mpsc::channel::<Msg>(64);
         let (close_tx, close_rx) = tokio::sync::oneshot::channel::<CloseInfo>();
+
+        // Forward Welcome to the UI layer so it can send Resume.
+        let _ = in_tx.send(welcome).await;
 
         tokio::spawn(async move {
             let mut ping_interval = tokio::time::interval(PING_INTERVAL);

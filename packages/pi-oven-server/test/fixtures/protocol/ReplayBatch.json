@@ -1,0 +1,1 @@
+{"type":"ReplayBatch","workspace_id":1,"events":[{"seq":11,"ts":1000,"event":{"type":"text_delta","text":"hi"}}],"latest_seq":11}

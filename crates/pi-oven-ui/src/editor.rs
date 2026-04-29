@@ -191,6 +191,12 @@ impl InputEditor {
         }
     }
 
+    pub fn clear(&mut self) {
+        self.buf.clear();
+        self.cursor = 0;
+        self.anchor = None;
+    }
+
     fn clamp_to_char_boundary(&self, pos: usize) -> usize {
         let len = self.buf.len();
         if pos >= len {
