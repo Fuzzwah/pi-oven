@@ -360,13 +360,18 @@ mod wgpu_main {
                     else { self.app_state.editor.move_right(shift); }
                     true
                 }
-                _ if !cmd && !ctrl => match ev.text.as_deref() {
-                    Some(s) if !s.is_empty() => {
-                        self.app_state.editor.push_str(s);
-                        true
+                _ if !cmd && !ctrl => {
+                    let s = ev.text.as_deref()
+                        .filter(|s| !s.is_empty())
+                        .or_else(|| match &ev.logical_key {
+                            Key::Character(s) => Some(s.as_str()),
+                            _ => None,
+                        });
+                    match s {
+                        Some(s) => { self.app_state.editor.push_str(s); true }
+                        None => false,
                     }
-                    _ => false,
-                },
+                }
                 _ => false,
             };
             if changed {
