@@ -83,9 +83,9 @@
 
 ## 11. End-to-end smoke test
 
-- [ ] 11.1 Start server with `PI_OVEN_SDK_STUB=1`; verify `Welcome` carries `workspaces: [{ workspace_id: 1, status: "idle" }]`
-- [ ] 11.2 Connect client; verify `Resume` is sent and `ReplayBatch` is received before any `AgentEvent`
-- [ ] 11.3 Type a message in the input bar and press Enter; verify `Send` frame is sent, `UserMessage` appears in the conversation pane, `AgentStatus running` arrives, synthetic events render, `AgentStatus idle` arrives
-- [ ] 11.4 Press Escape mid-stream; verify `Abort` is sent and session returns to idle
-- [ ] 11.5 Kill the client mid-stream; relaunch; verify conversation replays from seq 1 and rendering is correct
-- [ ] 11.6 Verify NDJSON log file at `~/.pi-oven/events/1/` contains one line per event with correct `seq`, `ts`, and `event` fields
+- [x] 11.1 Start server with `PI_OVEN_SDK_STUB=1`; verify `Welcome` carries `workspaces: [{ workspace_id: 1, status: "idle" }]`
+- [x] 11.2 Connect client; verify `Resume` is sent and `ReplayBatch` is received before any `AgentEvent`
+- [x] 11.3 Type a message in the input bar and press Enter; verify `Send` frame is sent, `UserMessage` appears in the conversation pane, `AgentStatus running` arrives, synthetic events render, `AgentStatus idle` arrives
+- [x] 11.4 Press Escape mid-stream; verify `Abort` is sent and session returns to idle
+- [x] 11.5 Kill the client mid-stream; relaunch; verify conversation replays from seq 1 and rendering is correct
+- [x] 11.6 Verify NDJSON log file at `~/.pi-oven/events/1/` contains one line per event with correct `seq`, `ts`, and `event` fields

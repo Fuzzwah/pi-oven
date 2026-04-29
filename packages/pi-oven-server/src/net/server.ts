@@ -160,6 +160,7 @@ export async function startListener(opts: ListenerOpts): Promise<ListenerHandle>
       }
 
       if (msg.type === "Send") {
+        logger.info({ workspace_id: msg.workspace_id, text_len: msg.text.length }, "Send received");
         const session = manager?.getSession(msg.workspace_id);
         if (!session) {
           ws.send(
@@ -183,6 +184,7 @@ export async function startListener(opts: ListenerOpts): Promise<ListenerHandle>
       }
 
       if (msg.type === "Resume") {
+        logger.info({ workspace_id: msg.workspace_id, last_seq: msg.last_seq }, "Resume received");
         const session = manager?.getSession(msg.workspace_id);
         if (!session) {
           ws.send(
