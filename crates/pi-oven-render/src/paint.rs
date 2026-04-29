@@ -102,12 +102,15 @@ impl Painter {
             .await
             .ok_or_else(|| anyhow!("no wgpu adapter available"))?;
 
+        // Use the adapter's reported limits rather than the conservative
+        // downlevel defaults — the latter cap textures at 2048×2048, which
+        // is smaller than a single retina-display surface.
         let (device, queue) = adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
                     label: Some("pi-oven device"),
                     required_features: wgpu::Features::empty(),
-                    required_limits: wgpu::Limits::downlevel_defaults(),
+                    required_limits: adapter.limits(),
                     memory_hints: wgpu::MemoryHints::default(),
                 },
                 None,

@@ -34,12 +34,17 @@ pub enum KeyAction {
 /// Translate a winit key event + the latest modifier state into a semantic
 /// [`KeyAction`]. Only `Pressed` events produce non-`Other` results — releases
 /// are reported as `Other` so the caller can decide whether to ignore them.
+///
+/// macOS intercepts `Cmd+\`` (window cycle) at the OS level even for bundled
+/// .app processes — the keydown never reaches our event loop. `Ctrl+\`` works
+/// cleanly and is mapped to `CmdBackquote` / `CmdShiftBackquote` instead.
 pub fn translate(event: &KeyEvent, modifiers: ModifiersState) -> KeyAction {
     if !event.state.is_pressed() {
         return KeyAction::Other(format!("release {:?}", event.logical_key));
     }
 
     let cmd = modifiers.super_key();
+    let ctrl = modifiers.control_key();
     let alt = modifiers.alt_key();
     let shift = modifiers.shift_key();
 
@@ -53,9 +58,11 @@ pub fn translate(event: &KeyEvent, modifiers: ModifiersState) -> KeyAction {
                 (Some(c), true) if cmd && c.is_ascii_digit() => {
                     KeyAction::CmdDigit((c as u8) - b'0')
                 }
-                (Some('`'), true) if cmd && shift => KeyAction::CmdShiftBackquote,
-                (Some('~'), true) if cmd => KeyAction::CmdShiftBackquote,
-                (Some('`'), true) if cmd => KeyAction::CmdBackquote,
+                // Ctrl+Shift+` or Cmd+Shift+` → reverse-cycle
+                (Some('`'), true) if (ctrl || cmd) && shift => KeyAction::CmdShiftBackquote,
+                (Some('~'), true) if ctrl || cmd => KeyAction::CmdShiftBackquote,
+                // Ctrl+` or Cmd+` → cycle (Ctrl is the working path on macOS)
+                (Some('`'), true) if ctrl || cmd => KeyAction::CmdBackquote,
                 (Some('`'), true) if alt => KeyAction::OptionBackquote,
                 (Some('w'), true) | (Some('W'), true) if cmd => KeyAction::CmdW,
                 (Some('n'), true) | (Some('N'), true) if cmd => KeyAction::CmdN,
@@ -63,12 +70,12 @@ pub fn translate(event: &KeyEvent, modifiers: ModifiersState) -> KeyAction {
                     KeyAction::CmdLetter(c.to_ascii_lowercase())
                 }
                 _ => KeyAction::Other(format!(
-                    "char {s:?} cmd={cmd} alt={alt} shift={shift}"
+                    "char {s:?} cmd={cmd} ctrl={ctrl} alt={alt} shift={shift}"
                 )),
             }
         }
         other => KeyAction::Other(format!(
-            "key {other:?} cmd={cmd} alt={alt} shift={shift}"
+            "key {other:?} cmd={cmd} ctrl={ctrl} alt={alt} shift={shift}"
         )),
     }
 }

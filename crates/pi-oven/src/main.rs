@@ -182,6 +182,7 @@ mod wgpu_main {
                 ?action,
                 logical = ?ev.logical_key,
                 cmd = self.modifiers.super_key(),
+                ctrl = self.modifiers.control_key(),
                 alt = self.modifiers.alt_key(),
                 shift = self.modifiers.shift_key(),
                 pressed = ev.state.is_pressed(),

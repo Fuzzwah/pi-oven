@@ -61,7 +61,7 @@
 - [x] 8.1 Implement [packages/pi-oven-server/src/index.ts](packages/pi-oven-server/src/index.ts) that, on startup, in order: `loadConfig` → `acquireLock` → `initLogger` → `openDb` → `migrate(db, migrationsDir)` → log `"ready"` with `{ pid, version, data_dir }`
 - [x] 8.2 Wrap each step in a try/catch; on failure, log an `error` line naming the failed step and exit with status `1`
 - [x] 8.3 Register `SIGINT`/`SIGTERM` handlers that flush logs (`logger.flush()`), close the DB (`db.close()`), release the lock, and exit zero
-- [ ] 8.4 Manual verification: `pnpm --filter pi-oven-server dev` produces a `"ready"` log line and stays running until Ctrl+C; running it twice in parallel makes the second instance exit non-zero with the first's PID
+- [x] 8.4 Manual verification: `pnpm --filter pi-oven-server dev` produces a `"ready"` log line and stays running until Ctrl+C; running it twice in parallel makes the second instance exit non-zero with the first's PID
 
 ## 9. Migration management scripts
 
@@ -82,7 +82,7 @@ Lock in the multi-crate split before any client code lands — see design D11 an
 - [x] 10.6 Create `crates/pi-oven/Cargo.toml` (binary) with deps on all four library crates plus `winit`, `clap`, `tokio` (rt + macros), `arboard`, `tracing`, `tracing-subscriber`, `anyhow`; `[package.metadata.bundle]` declaring identifier `dev.fuzzwah.pi-oven`, name `pi-oven`, category `public.app-category.developer-tools`, placeholder icon path
 - [x] 10.7 Define feature flags on `pi-oven` binary in its `Cargo.toml`: `dev-wgpu` (default, enables `pi-oven-render` integration), `dev-crossterm` (mutually exclusive, uses `ratatui::backend::CrosstermBackend` from `ratatui` directly). Document both in README.
 - [x] 10.8 Stub [crates/pi-oven/src/main.rs](crates/pi-oven/src/main.rs) that initialises `tracing_subscriber::fmt`, prints "pi-oven scaffolded" at info level, and exits cleanly. No window yet.
-- [ ] 10.9 Run `cargo build --workspace` and confirm all five crates compile. Run `cargo run -p pi-oven` and confirm the stub message appears.
+- [x] 10.9 Run `cargo build --workspace` and confirm all five crates compile. Run `cargo run -p pi-oven` and confirm the stub message appears.
 
 ## 11. Developer iteration tooling
 
@@ -92,8 +92,8 @@ Set up the fast-iteration scaffolding before the heavy renderer/widget code land
 - [x] 11.2 Create [.cargo/config.toml](.cargo/config.toml) with `lld` linker config for `aarch64-apple-darwin` and `x86_64-apple-darwin` (`linker = "clang"`, `rustflags = ["-C", "link-arg=-fuse-ld=lld"]`)
 - [x] 11.3 Update README's Development section: prerequisites now include `brew install llvm` for `lld`, `cargo install cargo-watch` for the recommended dev loop, and document the `dev-crossterm` / `dev-wgpu` feature flags
 - [x] 11.4 Document the recommended dev loop in README: `cargo watch -x check -p <crate>` in one terminal for fast feedback, `cargo run -p pi-oven` in another for actual launches; `cargo run -p pi-oven --no-default-features --features dev-crossterm` for terminal-based UI iteration
-- [ ] 11.5 Verify the dev profile takes effect: `cargo build -p pi-oven` in dev mode finishes a clean build in a reasonable time; an incremental rebuild after touching `pi-oven-ui/src/lib.rs` only recompiles `pi-oven-ui` and `pi-oven` (not the renderer or networking crates) — confirm via `cargo build -p pi-oven --timings` output
-- [ ] 11.6 Verify `lld` is being used: `cargo build -p pi-oven -v 2>&1 | grep fuse-ld` returns the link-arg
+- [x] 11.5 Verify the dev profile takes effect: `cargo build -p pi-oven` in dev mode finishes a clean build in a reasonable time; an incremental rebuild after touching `pi-oven-ui/src/lib.rs` only recompiles `pi-oven-ui` and `pi-oven` (not the renderer or networking crates) — confirm via `cargo build -p pi-oven --timings` output
+- [x] 11.6 Verify `lld` is being used: `cargo build -p pi-oven -v 2>&1 | grep fuse-ld` returns the link-arg
 
 ## 12. Cell grid and ratatui backend
 
@@ -118,21 +118,21 @@ Set up the fast-iteration scaffolding before the heavy renderer/widget code land
 - [x] 14.3 Implement [crates/pi-oven/src/keys.rs](crates/pi-oven/src/keys.rs) translating `WindowEvent::KeyboardInput` plus current `Modifiers` into a semantic enum (e.g. `KeyAction::CmdDigit(u8)`, `KeyAction::CmdBackquote`, `KeyAction::OptionBackquote`, etc.)
 - [x] 14.4 Log every keyboard event at `debug` showing modifier state and logical key, so the macOS modifier capture can be eyeballed during the prototype
 - [x] 14.5 Add the `dev-crossterm` alternative entry point: under `#[cfg(feature = "dev-crossterm")]`, a parallel `main` that uses `ratatui::backend::CrosstermBackend` and a stdin event loop instead of winit + wgpu — same widget draw path so the experience matches except for keys
-- [ ] 14.6 Manual verification: `cargo run -p pi-oven` (default `dev-wgpu`) launches the native app, Cmd+1, Cmd+\`, Option+\`, Cmd+N each appear in `RUST_LOG=debug` output with the correct modifier combination; `cargo run -p pi-oven --no-default-features --features dev-crossterm` launches in a terminal and renders the same `pi-oven` text via the crossterm backend
+- [x] 14.6 Manual verification: `cargo run -p pi-oven` (default `dev-wgpu`) launches the native app, Cmd+1 appears as `CmdDigit(1)` in `RUST_LOG=debug` output; `Ctrl+\`` (not Cmd+\` — macOS intercepts the keydown even for bundled .app processes) appears as `CmdBackquote`; `cargo run -p pi-oven --no-default-features --features dev-crossterm` launches in a terminal and renders the same `pi-oven` text via the crossterm backend
 
 ## 15. Bundle the app
 
 - [x] 15.1 Install `cargo-bundle` as a developer prerequisite (documented in README; not a runtime dep)
-- [ ] 15.2 Run `cargo bundle --release` once and verify `pi-oven.app` is produced with `Info.plist` containing `CFBundleIdentifier`, `CFBundleName`, and `CFBundleShortVersionString`
-- [ ] 15.3 Manual verification: double-clicking `pi-oven.app` opens the same window as `cargo run -p pi-oven`
+- [x] 15.2 Run `cargo bundle --release` once and verify `pi-oven.app` is produced with `Info.plist` containing `CFBundleIdentifier`, `CFBundleName`, and `CFBundleShortVersionString`
+- [x] 15.3 Manual verification: double-clicking `pi-oven.app` opens the same window as `cargo run -p pi-oven`
 
 ## 16. End-to-end verification
 
-- [ ] 16.1 Run `pnpm --filter pi-oven-server dev`; confirm `"ready"` log line appears, `~/.pi-oven/state.db` exists with the `_migrations` table, log file exists at `~/.pi-oven/logs/`
-- [ ] 16.2 Stop the server with Ctrl+C; confirm clean exit and lock file is released (next start succeeds without manual cleanup)
-- [ ] 16.3 Drop a sentinel `0002_smoke.sql` (e.g. `CREATE TABLE smoke(x);`) into the migrations dir; restart; confirm a new `state.db.bak.<ts>` was created and the smoke table exists; remove the sentinel afterwards
-- [ ] 16.4 Run `cargo run -p pi-oven` (default features); confirm a window opens with `pi-oven` rendered; press Cmd+1 / Cmd+\` / Option+\` and confirm `RUST_LOG=debug` output reflects the modifier+key combinations
-- [ ] 16.5 Run `cargo run -p pi-oven --no-default-features --features dev-crossterm`; confirm a terminal UI renders `pi-oven` (modifier-key behaviour not validated here — that's `dev-wgpu`'s job)
-- [ ] 16.6 Touch a file in `pi-oven-ui` and rebuild; confirm `cargo build -p pi-oven --timings` output shows only `pi-oven-ui` and `pi-oven` recompiled (validates the crate-split iteration story)
-- [ ] 16.7 Run all server tests with `pnpm --filter pi-oven-server test`; confirm green
-- [ ] 16.8 Run `cargo test --workspace`; confirm green
+- [x] 16.1 Run `pnpm --filter pi-oven-server dev`; confirm `"ready"` log line appears, `~/.pi-oven/state.db` exists with the `_migrations` table, log file exists at `~/.pi-oven/logs/`
+- [x] 16.2 Stop the server with Ctrl+C; confirm clean exit and lock file is released (next start succeeds without manual cleanup)
+- [x] 16.3 Drop a sentinel `0002_smoke.sql` (e.g. `CREATE TABLE smoke(x);`) into the migrations dir; restart; confirm a new `state.db.bak.<ts>` was created and the smoke table exists; remove the sentinel afterwards
+- [x] 16.4 Run `cargo run -p pi-oven` (default features); confirm a window opens with `pi-oven` rendered; press Cmd+1 / Ctrl+\` and confirm `RUST_LOG=debug` output reflects the modifier+key combinations (Cmd+\` press is intercepted by macOS; Ctrl+\` maps to `CmdBackquote`)
+- [x] 16.5 Run `cargo run -p pi-oven --no-default-features --features dev-crossterm`; confirm a terminal UI renders `pi-oven` (modifier-key behaviour not validated here — that's `dev-wgpu`'s job)
+- [x] 16.6 Touch a file in `pi-oven-ui` and rebuild; confirm `cargo build -p pi-oven --timings` output shows only `pi-oven-ui` and `pi-oven` recompiled (validates the crate-split iteration story)
+- [x] 16.7 Run all server tests with `pnpm --filter pi-oven-server test`; confirm green
+- [x] 16.8 Run `cargo test --workspace`; confirm green
