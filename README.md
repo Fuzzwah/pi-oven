@@ -1,5 +1,8 @@
 # pi-oven
 
+[![License: ELv2](https://img.shields.io/badge/License-Elastic_v2-blue.svg)](LICENSE)
+[![CLA](https://img.shields.io/badge/CLA-required-orange.svg)](CLA.md)
+
 A direct client/server harness for running multiple [pi coding agent](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent) sessions in parallel across git worktrees, with a native macOS TUI client.
 
 > **Status:** pre-alpha. The runtime is being scaffolded under [openspec/changes/scaffold-runtime/](openspec/changes/scaffold-runtime/). Nothing builds yet.
@@ -8,10 +11,10 @@ A direct client/server harness for running multiple [pi coding agent](https://gi
 
 If you drive a pi (or any other coding agent) over SSH from a Mac, you've probably hit some of these:
 
-- **Hotkey theft.** macOS and your terminal eat `cmd+1`, `cmd+\``, `cmd+n` before they reach the TUI. pi-oven runs as a native `.app` that owns its window, so modifiers land where you want them.
+- **Hotkey theft.** macOS and your terminal eat `cmd+1`, `cmd+n` before they reach the TUI. pi-oven runs as a native `.app` that owns its window, so modifiers land where you want them. (Tab cycling uses `ctrl+\`` rather than `cmd+\`` — macOS intercepts the latter at the OS level even for bundled apps.)
 - **One agent at a time isn't enough.** You want issue #42 in one tab, yesterday's spec in another, an exploration on a third — each isolated. pi-oven gives every workspace its own worktree, branch, and pi session, switchable with `cmd+1..9`.
 - **Closing the laptop kills your work.** Agents run on the server, independent of the client. Close the lid, reopen later — the conversation pane replays the events you missed.
-- **Tabs across projects all look the same.** Cycling from an agent on Project A to one on Project B with `cmd+\`` looks identical — a beat of "wait, which repo am I in?" every time. pi-oven assigns a theme per project (Catppuccin, Tokyo Night, Solarized, Nord, Dracula, Gruvbox, Rose Pine, Everforest, plus pi-oven defaults) and auto-switches the entire UI as you cross projects.
+- **Tabs across projects all look the same.** Cycling from an agent on Project A to one on Project B with `ctrl+\`` looks identical — a beat of "wait, which repo am I in?" every time. pi-oven assigns a theme per project (Catppuccin, Tokyo Night, Solarized, Nord, Dracula, Gruvbox, Rose Pine, Everforest, plus pi-oven defaults) and auto-switches the entire UI as you cross projects.
 - **Pasting a screenshot means leaving the TUI.** Sharing a UI bug, an error panel, or a design reference today means dropping into VS Code or another editor that handles clipboard images. pi-oven takes `cmd+V` directly: text pastes inline, images are staged as attachments and sent multimodally to the agent.
 - **Context-switching out of the TUI to commit, push, open PRs.** The agent does all of that as tool calls. You stay in one place from "let's start" through "ship it"; the worktree and remote branch are cleaned up automatically on merge.
 - **No second set of eyes.** Every PR gets a paired **reviewer agent** in its own tab that reads the diff and posts review comments via the tracker.
@@ -60,7 +63,7 @@ Inside a workspace you're talking to a normal `pi` session — slash commands, q
 
 `cmd+V` in the input bar handles whatever's on the clipboard: text pastes inline, an image is staged as an attachment with a thumbnail next to the input bar, then sent multimodally when you hit Enter. Multiple images per message are supported. `cmd+shift+V` forces plain-text paste if you ever want to skip image detection.
 
-`cmd+1`…`cmd+9` jumps between tabs; `cmd+\`` and `cmd+shift+\`` cycle them. `cmd+w` closes the focused tab. Agents run in the server, independent of your client connection: you can close your laptop, reconnect later, and the conversation pane replays everything you missed.
+`cmd+1`…`cmd+9` jumps between tabs; `ctrl+\`` and `ctrl+shift+\`` cycle them (`cmd+\`` is intercepted by macOS even in a bundled `.app`). `cmd+w` closes the focused tab. Agents run in the server, independent of your client connection: you can close your laptop, reconnect later, and the conversation pane replays everything you missed.
 
 ### Shipping the work
 
