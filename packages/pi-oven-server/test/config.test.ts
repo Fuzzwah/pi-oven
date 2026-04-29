@@ -93,4 +93,21 @@ describe("loadConfig", () => {
       }),
     ).toThrow(/invalid log_level/);
   });
+
+  it("throws on invalid timezone in file", () => {
+    const path = join(workdir, "server.toml");
+    writeFileSync(path, 'tz = "Mars/Olympus"\n');
+    chmodSync(path, 0o600);
+
+    expect(() => loadConfig({ configPath: path, env: {} })).toThrow(/invalid tz/);
+  });
+
+  it("throws on invalid timezone via env", () => {
+    expect(() =>
+      loadConfig({
+        configPath: join(workdir, "missing.toml"),
+        env: { PI_OVEN_TZ: "Mars/Olympus" },
+      }),
+    ).toThrow(/invalid tz/);
+  });
 });

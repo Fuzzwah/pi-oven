@@ -23,10 +23,36 @@ use glyphon::{
     SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport, Wrap,
 };
 use ratatui::style::{Color as RColor, Modifier};
+use wgpu::util::DeviceExt;
 use winit::dpi::PhysicalSize;
 use winit::window::Window;
 
 use crate::grid::{Cell, Grid};
+
+const RECT_SHADER: &str = r#"
+struct VertexInput {
+    @location(0) position: vec2<f32>,
+    @location(1) color: vec4<f32>,
+};
+
+struct VertexOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) color: vec4<f32>,
+};
+
+@vertex
+fn vs_main(input: VertexInput) -> VertexOutput {
+    var output: VertexOutput;
+    output.position = vec4<f32>(input.position, 0.0, 1.0);
+    output.color = input.color;
+    return output;
+}
+
+@fragment
+fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
+    return input.color;
+}
+"#;
 
 /// 0–255 RGBA. Stored as four `u8`s rather than [f64; 4] so the conversion to
 /// wgpu's `Color` is trivial and lossless.
@@ -73,6 +99,7 @@ pub struct Painter {
     viewport: Viewport,
     atlas: TextAtlas,
     text_renderer: TextRenderer,
+    rect_pipeline: wgpu::RenderPipeline,
 
     metrics: CellMetrics,
     clear_color: ClearColor,
@@ -124,7 +151,13 @@ impl Painter {
             .iter()
             .copied()
             .find(|f| f.is_srgb())
-            .unwrap_or(surface_caps.formats[0]);
+            .or_else(|| surface_caps.formats.first().copied())
+            .ok_or_else(|| anyhow!("surface has no supported formats"))?;
+        let alpha_mode = surface_caps
+            .alpha_modes
+            .first()
+            .copied()
+            .ok_or_else(|| anyhow!("surface has no supported alpha modes"))?;
 
         let surface_config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -137,7 +170,7 @@ impl Painter {
                 .copied()
                 .find(|m| matches!(m, wgpu::PresentMode::Mailbox))
                 .unwrap_or(wgpu::PresentMode::Fifo),
-            alpha_mode: surface_caps.alpha_modes[0],
+            alpha_mode,
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
         };
@@ -152,6 +185,7 @@ impl Painter {
         let mut atlas = TextAtlas::new(&device, &queue, &cache, surface_format);
         let text_renderer =
             TextRenderer::new(&mut atlas, &device, wgpu::MultisampleState::default(), None);
+        let rect_pipeline = create_rect_pipeline(&device, surface_format);
 
         // Size a monospace cell as `font_size * 0.6` wide × `font_size * 1.25`
         // tall — close enough for a uniform monospace family. The painter
@@ -175,6 +209,7 @@ impl Painter {
             viewport,
             atlas,
             text_renderer,
+            rect_pipeline,
             metrics,
             clear_color: ClearColor::default(),
             scale_factor,
@@ -249,6 +284,7 @@ impl Painter {
         buffer.set_wrap(&mut self.font_system, Wrap::None);
 
         let lines = build_lines(grid);
+        let fill_rects = build_fill_rects(grid, self.metrics);
         let spans: Vec<(&str, Attrs)> = lines
             .iter()
             .flat_map(|line| line.spans.iter().map(|s| (s.text.as_str(), s.attrs.clone())))
@@ -296,6 +332,19 @@ impl Painter {
             .context("prepare glyphon text")?;
 
         {
+            let rect_vertices = fill_rects_to_vertices(
+                &fill_rects,
+                self.surface_config.width as f32,
+                self.surface_config.height as f32,
+            );
+            let rect_buffer = (!rect_vertices.is_empty()).then(|| {
+                self.device
+                    .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("pi-oven fill rect buffer"),
+                        contents: bytemuck::cast_slice(&rect_vertices),
+                        usage: wgpu::BufferUsages::VERTEX,
+                    })
+            });
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("pi-oven main pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -310,6 +359,11 @@ impl Painter {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
+            if let Some(rect_buffer) = rect_buffer.as_ref() {
+                pass.set_pipeline(&self.rect_pipeline);
+                pass.set_vertex_buffer(0, rect_buffer.slice(..));
+                pass.draw(0..rect_vertices.len() as u32, 0..1);
+            }
             self.text_renderer
                 .render(&self.atlas, &self.viewport, &mut pass)
                 .context("render glyphon text")?;
@@ -333,6 +387,22 @@ struct Line {
     spans: Vec<Span>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct FillRect {
+    left: f32,
+    top: f32,
+    right: f32,
+    bottom: f32,
+    color: [f32; 4],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct FillVertex {
+    position: [f32; 2],
+    color: [f32; 4],
+}
+
 fn build_lines(grid: &Grid) -> Vec<Line> {
     let mut lines = Vec::with_capacity(grid.rows() as usize);
     for y in 0..grid.rows() {
@@ -340,17 +410,16 @@ fn build_lines(grid: &Grid) -> Vec<Line> {
         let mut current: Option<(RColor, RColor, Modifier, String)> = None;
 
         for x in 0..grid.cols() {
-            let cell = grid.get(x, y).copied().unwrap_or(Cell::default());
+            let cell = grid.get(x, y).cloned().unwrap_or_default();
             match &mut current {
                 Some(state) if state.0 == cell.fg && state.1 == cell.bg && state.2 == cell.attrs => {
-                    state.3.push(cell.ch);
+                    state.3.push_str(&cell.symbol);
                 }
                 _ => {
                     if let Some(state) = current.take() {
                         spans.push(state_to_span(state));
                     }
-                    let mut text = String::new();
-                    text.push(cell.ch);
+                    let text = cell.symbol.clone();
                     current = Some((cell.fg, cell.bg, cell.attrs, text));
                 }
             }
@@ -382,32 +451,319 @@ fn state_to_span(state: (RColor, RColor, Modifier, String)) -> Span {
     if modifiers.contains(Modifier::ITALIC) {
         attrs = attrs.style(glyphon::Style::Italic);
     }
-    // glyphon does not directly model BG; per-cell backgrounds are deferred
-    // to a future change that draws coloured quads beneath the text.
+    // Background fills and underline strokes are rendered as quads in the wgpu
+    // pass; glyphon only handles the text spans themselves.
     Span { text, attrs }
 }
 
+fn build_fill_rects(grid: &Grid, metrics: CellMetrics) -> Vec<FillRect> {
+    let mut rects = Vec::new();
+    let underline_height = (metrics.font_size_px * 0.08).max(1.0);
+    let underline_offset = (metrics.line_height_px * 0.12).max(1.0);
+
+    for y in 0..grid.rows() {
+        for (start, end, color) in collect_row_runs(grid, y, |cell| ratatui_color_to_rgba(cell.bg))
+        {
+            rects.push(FillRect {
+                left: start * metrics.cell_width_px,
+                top: y as f32 * metrics.line_height_px,
+                right: end * metrics.cell_width_px,
+                bottom: (y as f32 + 1.0) * metrics.line_height_px,
+                color,
+            });
+        }
+
+        for (start, end, color) in collect_row_runs(grid, y, |cell| {
+            cell.attrs
+                .contains(Modifier::UNDERLINED)
+                .then(|| ratatui_color_to_rgba(cell.fg).unwrap_or([1.0, 1.0, 1.0, 1.0]))
+        }) {
+            let top = (y as f32 + 1.0) * metrics.line_height_px - underline_offset - underline_height;
+            rects.push(FillRect {
+                left: start * metrics.cell_width_px,
+                top,
+                right: end * metrics.cell_width_px,
+                bottom: top + underline_height,
+                color,
+            });
+        }
+    }
+
+    rects
+}
+
+fn collect_row_runs<F>(
+    grid: &Grid,
+    y: u16,
+    color_for_cell: F,
+) -> Vec<(f32, f32, [f32; 4])>
+where
+    F: Fn(&Cell) -> Option<[f32; 4]>,
+{
+    let mut runs = Vec::new();
+    let mut run_start: Option<u16> = None;
+    let mut run_color: Option<[f32; 4]> = None;
+
+    for x in 0..grid.cols() {
+        let cell = grid.get(x, y).cloned().unwrap_or_default();
+        let cell_color = color_for_cell(&cell);
+        if cell_color.is_some() && cell_color == run_color {
+            continue;
+        }
+
+        if let (Some(start), Some(color)) = (run_start.take(), run_color.take()) {
+            runs.push((start as f32, x as f32, color));
+        }
+
+        if let Some(color) = cell_color {
+            run_start = Some(x);
+            run_color = Some(color);
+        }
+    }
+
+    if let (Some(start), Some(color)) = (run_start.take(), run_color.take()) {
+        runs.push((start as f32, grid.cols() as f32, color));
+    }
+
+    runs
+}
+
+fn fill_rects_to_vertices(rects: &[FillRect], width: f32, height: f32) -> Vec<FillVertex> {
+    let mut vertices = Vec::with_capacity(rects.len() * 6);
+    for rect in rects {
+        let left = px_to_ndc_x(rect.left, width);
+        let right = px_to_ndc_x(rect.right, width);
+        let top = px_to_ndc_y(rect.top, height);
+        let bottom = px_to_ndc_y(rect.bottom, height);
+        let color = rect.color;
+
+        vertices.extend_from_slice(&[
+            FillVertex { position: [left, top], color },
+            FillVertex { position: [right, top], color },
+            FillVertex { position: [right, bottom], color },
+            FillVertex { position: [left, top], color },
+            FillVertex { position: [right, bottom], color },
+            FillVertex { position: [left, bottom], color },
+        ]);
+    }
+    vertices
+}
+
+fn px_to_ndc_x(x: f32, width: f32) -> f32 {
+    (x / width) * 2.0 - 1.0
+}
+
+fn px_to_ndc_y(y: f32, height: f32) -> f32 {
+    1.0 - (y / height) * 2.0
+}
+
 fn ratatui_color_to_glyphon(c: RColor) -> Option<GColor> {
-    match c {
-        RColor::Reset => None,
-        RColor::Black => Some(GColor::rgb(0, 0, 0)),
-        RColor::Red => Some(GColor::rgb(0xcc, 0x33, 0x33)),
-        RColor::Green => Some(GColor::rgb(0x33, 0xcc, 0x33)),
-        RColor::Yellow => Some(GColor::rgb(0xcc, 0xcc, 0x33)),
-        RColor::Blue => Some(GColor::rgb(0x33, 0x33, 0xcc)),
-        RColor::Magenta => Some(GColor::rgb(0xcc, 0x33, 0xcc)),
-        RColor::Cyan => Some(GColor::rgb(0x33, 0xcc, 0xcc)),
-        RColor::Gray => Some(GColor::rgb(0xaa, 0xaa, 0xaa)),
-        RColor::DarkGray => Some(GColor::rgb(0x55, 0x55, 0x55)),
-        RColor::LightRed => Some(GColor::rgb(0xff, 0x66, 0x66)),
-        RColor::LightGreen => Some(GColor::rgb(0x66, 0xff, 0x66)),
-        RColor::LightYellow => Some(GColor::rgb(0xff, 0xff, 0x66)),
-        RColor::LightBlue => Some(GColor::rgb(0x66, 0x66, 0xff)),
-        RColor::LightMagenta => Some(GColor::rgb(0xff, 0x66, 0xff)),
-        RColor::LightCyan => Some(GColor::rgb(0x66, 0xff, 0xff)),
-        RColor::White => Some(GColor::rgb(0xff, 0xff, 0xff)),
-        RColor::Rgb(r, g, b) => Some(GColor::rgb(r, g, b)),
-        RColor::Indexed(_) => None,
+    ratatui_color_to_rgba_u8(c).map(|[r, g, b, _]| GColor::rgba(r, g, b, 0xff))
+}
+
+fn ratatui_color_to_rgba(c: RColor) -> Option<[f32; 4]> {
+    ratatui_color_to_rgba_u8(c).map(|[r, g, b, a]| {
+        [
+            r as f32 / 255.0,
+            g as f32 / 255.0,
+            b as f32 / 255.0,
+            a as f32 / 255.0,
+        ]
+    })
+}
+
+fn ratatui_color_to_rgba_u8(c: RColor) -> Option<[u8; 4]> {
+    let rgb = match c {
+        RColor::Reset => return None,
+        RColor::Black => [0x00, 0x00, 0x00],
+        RColor::Red => [0xcc, 0x33, 0x33],
+        RColor::Green => [0x33, 0xcc, 0x33],
+        RColor::Yellow => [0xcc, 0xcc, 0x33],
+        RColor::Blue => [0x33, 0x33, 0xcc],
+        RColor::Magenta => [0xcc, 0x33, 0xcc],
+        RColor::Cyan => [0x33, 0xcc, 0xcc],
+        RColor::Gray => [0xaa, 0xaa, 0xaa],
+        RColor::DarkGray => [0x55, 0x55, 0x55],
+        RColor::LightRed => [0xff, 0x66, 0x66],
+        RColor::LightGreen => [0x66, 0xff, 0x66],
+        RColor::LightYellow => [0xff, 0xff, 0x66],
+        RColor::LightBlue => [0x66, 0x66, 0xff],
+        RColor::LightMagenta => [0xff, 0x66, 0xff],
+        RColor::LightCyan => [0x66, 0xff, 0xff],
+        RColor::White => [0xff, 0xff, 0xff],
+        RColor::Rgb(r, g, b) => [r, g, b],
+        RColor::Indexed(i) => ansi_index_to_rgb(i),
+    };
+    Some([rgb[0], rgb[1], rgb[2], 0xff])
+}
+
+fn ansi_index_to_rgb(index: u8) -> [u8; 3] {
+    const ANSI_16: [[u8; 3]; 16] = [
+        [0x00, 0x00, 0x00],
+        [0x80, 0x00, 0x00],
+        [0x00, 0x80, 0x00],
+        [0x80, 0x80, 0x00],
+        [0x00, 0x00, 0x80],
+        [0x80, 0x00, 0x80],
+        [0x00, 0x80, 0x80],
+        [0xc0, 0xc0, 0xc0],
+        [0x80, 0x80, 0x80],
+        [0xff, 0x00, 0x00],
+        [0x00, 0xff, 0x00],
+        [0xff, 0xff, 0x00],
+        [0x00, 0x00, 0xff],
+        [0xff, 0x00, 0xff],
+        [0x00, 0xff, 0xff],
+        [0xff, 0xff, 0xff],
+    ];
+
+    match index {
+        0..=15 => ANSI_16[index as usize],
+        16..=231 => {
+            let idx = index - 16;
+            let r = idx / 36;
+            let g = (idx % 36) / 6;
+            let b = idx % 6;
+            [cube_channel(r), cube_channel(g), cube_channel(b)]
+        }
+        232..=255 => {
+            let gray = 8 + (index - 232) * 10;
+            [gray, gray, gray]
+        }
+    }
+}
+
+fn cube_channel(component: u8) -> u8 {
+    if component == 0 { 0 } else { 55 + component * 40 }
+}
+
+fn create_rect_pipeline(
+    device: &wgpu::Device,
+    surface_format: wgpu::TextureFormat,
+) -> wgpu::RenderPipeline {
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("pi-oven rect shader"),
+        source: wgpu::ShaderSource::Wgsl(RECT_SHADER.into()),
+    });
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("pi-oven rect pipeline layout"),
+        bind_group_layouts: &[],
+        push_constant_ranges: &[],
+    });
+
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("pi-oven rect pipeline"),
+        layout: Some(&layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vs_main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            buffers: &[wgpu::VertexBufferLayout {
+                array_stride: std::mem::size_of::<FillVertex>() as u64,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &[
+                    wgpu::VertexAttribute {
+                        offset: 0,
+                        shader_location: 0,
+                        format: wgpu::VertexFormat::Float32x2,
+                    },
+                    wgpu::VertexAttribute {
+                        offset: std::mem::size_of::<[f32; 2]>() as u64,
+                        shader_location: 1,
+                        format: wgpu::VertexFormat::Float32x4,
+                    },
+                ],
+            }],
+        },
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            strip_index_format: None,
+            front_face: wgpu::FrontFace::Ccw,
+            cull_mode: None,
+            unclipped_depth: false,
+            polygon_mode: wgpu::PolygonMode::Fill,
+            conservative: false,
+        },
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs_main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: surface_format,
+                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        multiview: None,
+        cache: None,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ansi_index_to_rgb, build_fill_rects, CellMetrics};
+    use crate::grid::{Cell, Grid};
+    use ratatui::style::{Color, Modifier};
+
+    #[test]
+    fn fill_rects_include_background_and_underline_runs() {
+        let mut grid = Grid::new(3, 1);
+        grid.set(
+            0,
+            0,
+            Cell {
+                symbol: "A".into(),
+                fg: Color::White,
+                bg: Color::Blue,
+                attrs: Modifier::empty(),
+            },
+        );
+        grid.set(
+            1,
+            0,
+            Cell {
+                symbol: "B".into(),
+                fg: Color::Red,
+                bg: Color::Blue,
+                attrs: Modifier::UNDERLINED,
+            },
+        );
+        grid.set(
+            2,
+            0,
+            Cell {
+                symbol: "C".into(),
+                fg: Color::Red,
+                bg: Color::Reset,
+                attrs: Modifier::UNDERLINED,
+            },
+        );
+
+        let rects = build_fill_rects(
+            &grid,
+            CellMetrics {
+                cell_width_px: 10.0,
+                line_height_px: 20.0,
+                font_size_px: 16.0,
+            },
+        );
+
+        assert_eq!(rects.len(), 3);
+        assert_eq!(rects[0].left, 0.0);
+        assert_eq!(rects[0].right, 20.0);
+        assert_eq!(rects[1].left, 10.0);
+        assert_eq!(rects[1].right, 30.0);
+        assert!(rects[1].top >= 0.0);
+        assert!(rects[1].bottom <= 20.0);
+    }
+
+    #[test]
+    fn indexed_palette_colors_are_mapped() {
+        assert_eq!(ansi_index_to_rgb(9), [0xff, 0x00, 0x00]);
+        assert_eq!(ansi_index_to_rgb(46), [0x00, 0xff, 0x00]);
+        assert_eq!(ansi_index_to_rgb(244), [0x80, 0x80, 0x80]);
     }
 }
 

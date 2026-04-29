@@ -18,7 +18,6 @@ let db: Database | undefined;
 let release: ReleaseLock | undefined;
 
 async function shutdown(signal: NodeJS.Signals): Promise<void> {
-  const code = signal === "SIGINT" ? 130 : 143;
   if (logger) {
     logger.info({ signal }, "shutting down");
     try {
@@ -31,7 +30,7 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
   try {
     await release?.();
   } catch { /* ignore */ }
-  process.exit(code);
+  process.exit(0);
 }
 
 async function boot(): Promise<void> {
