@@ -19,7 +19,7 @@ fn init_tracing() {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,cosmic_text=error")),
         )
         .init();
 }
@@ -277,9 +277,7 @@ mod wgpu_main {
                 painter.set_font_size(new_size);
             }
             self.rebuild_terminal();
-            if let Some(w) = self.window.as_ref() {
-                w.request_redraw();
-            }
+            self.redraw();
         }
     }
 
