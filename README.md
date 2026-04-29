@@ -215,4 +215,6 @@ The server owns `~/.pi-oven/`:
 
 ## License
 
-TBD.
+Source-available under the [Elastic License 2.0](LICENSE). You can use, copy, modify, and self-host pi-oven freely; you can't offer it to third parties as a hosted or managed service, and you can't strip license-key or licensing notices.
+
+Contributions are accepted under a [Contributor License Agreement](CLA.md), signed automatically via the CLA Assistant bot on pull requests. Contributors retain copyright over their work; the CLA grants the maintainer (Rob Crouch) a license broad enough to relicense the project later if needed.
