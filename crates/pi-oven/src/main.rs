@@ -119,7 +119,7 @@ mod wgpu_main {
     use winit::application::ApplicationHandler;
     use winit::event::{KeyEvent, WindowEvent};
     use winit::event_loop::{ActiveEventLoop, EventLoop};
-    use winit::keyboard::ModifiersState;
+    use winit::keyboard::{Key, ModifiersState, NamedKey};
     use winit::window::{Window, WindowAttributes, WindowId};
 
     use crate::keys::{translate, KeyAction};
@@ -135,6 +135,7 @@ mod wgpu_main {
         terminal: Option<Terminal<RatatuiGridBackend>>,
         modifiers: ModifiersState,
         font_size: f32,
+        app_state: pi_oven_ui::AppState,
     }
 
     impl App {
@@ -145,6 +146,7 @@ mod wgpu_main {
                 terminal: None,
                 modifiers: ModifiersState::empty(),
                 font_size: FONT_SIZE_PX,
+                app_state: pi_oven_ui::AppState::default(),
             }
         }
 
@@ -165,8 +167,9 @@ mod wgpu_main {
             else {
                 return;
             };
+            let state = &self.app_state;
             if let Err(e) = terminal.draw(|f| {
-                pi_oven_ui::render(f);
+                pi_oven_ui::render(f, state);
             }) {
                 tracing::error!(?e, "ratatui draw failed");
                 return;
@@ -261,10 +264,30 @@ mod wgpu_main {
                 "keyboard event"
             );
             match action {
-                KeyAction::CmdW => event_loop.exit(),
-                KeyAction::CmdEqual => self.adjust_font_size(FONT_SIZE_STEP),
-                KeyAction::CmdMinus => self.adjust_font_size(-FONT_SIZE_STEP),
+                KeyAction::CmdW => { event_loop.exit(); return; }
+                KeyAction::CmdEqual => { self.adjust_font_size(FONT_SIZE_STEP); return; }
+                KeyAction::CmdMinus => { self.adjust_font_size(-FONT_SIZE_STEP); return; }
                 _ => {}
+            }
+
+            // Text input: key press with no Cmd/Ctrl modifier.
+            if ev.state.is_pressed()
+                && !self.modifiers.super_key()
+                && !self.modifiers.control_key()
+            {
+                let changed = match &ev.logical_key {
+                    Key::Named(NamedKey::Backspace) => self.app_state.input.pop().is_some(),
+                    _ => match ev.text.as_deref() {
+                        Some(s) if !s.is_empty() => {
+                            self.app_state.input.push_str(s);
+                            true
+                        }
+                        _ => false,
+                    },
+                };
+                if changed {
+                    self.redraw();
+                }
             }
         }
 
@@ -315,17 +338,20 @@ mod crossterm_main {
         let backend = CrosstermBackend::new(out);
         let mut terminal = Terminal::new(backend)?;
 
+        let mut app_state = pi_oven_ui::AppState::default();
         let result = (|| -> Result<()> {
             loop {
                 terminal.draw(|f| {
-                    pi_oven_ui::render(f);
+                    pi_oven_ui::render(f, &app_state);
                 })?;
 
-                if event::poll(Duration::from_millis(100))? {
+                if event::poll(Duration::from_millis(16))? {
                     if let Event::Key(k) = event::read()? {
                         if k.kind == KeyEventKind::Press {
                             match k.code {
-                                KeyCode::Char('q') | KeyCode::Esc => break,
+                                KeyCode::Esc => break,
+                                KeyCode::Backspace => { app_state.input.pop(); }
+                                KeyCode::Char(c) => app_state.input.push(c),
                                 _ => {}
                             }
                         }

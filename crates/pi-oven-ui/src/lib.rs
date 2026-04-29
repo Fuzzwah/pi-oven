@@ -15,7 +15,14 @@ pub use tabs::render_tabs;
 use ratatui::layout::{Constraint, Layout};
 use ratatui::Frame;
 
-pub fn render(frame: &mut Frame) {
+/// Application state passed into every render call.
+#[derive(Default)]
+pub struct AppState {
+    /// Current contents of the input bar.
+    pub input: String,
+}
+
+pub fn render(frame: &mut Frame, state: &AppState) {
     let [sidebar_area, right_area] =
         Layout::horizontal([Constraint::Length(28), Constraint::Min(0)]).areas(frame.area());
 
@@ -30,5 +37,5 @@ pub fn render(frame: &mut Frame) {
     render_sidebar(sidebar_area, buf);
     render_tabs(tabs_area, buf);
     render_conversation(conversation_area, buf);
-    render_input(input_area, buf);
+    render_input(input_area, buf, &state.input);
 }

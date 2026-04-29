@@ -4,7 +4,8 @@ use ratatui::Terminal;
 fn render_at(cols: u16, rows: u16) -> ratatui::buffer::Buffer {
     let backend = TestBackend::new(cols, rows);
     let mut terminal = Terminal::new(backend).unwrap();
-    terminal.draw(|f| pi_oven_ui::render(f)).unwrap();
+    let state = pi_oven_ui::AppState::default();
+    terminal.draw(|f| pi_oven_ui::render(f, &state)).unwrap();
     terminal.backend().buffer().clone()
 }
 
