@@ -211,7 +211,7 @@ mod wgpu_main {
             };
             self.window = Some(window.clone());
 
-            match pollster::block_on(Painter::new(window.clone(), FONT_SIZE_PX)) {
+            match pollster::block_on(Painter::new(window.clone(), self.font_size)) {
                 Ok(p) => {
                     self.painter = Some(p);
                     self.rebuild_terminal();
