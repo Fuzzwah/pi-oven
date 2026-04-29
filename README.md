@@ -5,7 +5,7 @@
 
 A direct client/server harness for running multiple [pi coding agent](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent) sessions in parallel across git worktrees, with a native macOS TUI client.
 
-> **Status:** pre-alpha. The runtime is being scaffolded under [openspec/changes/scaffold-runtime/](openspec/changes/scaffold-runtime/). Nothing builds yet.
+> **Status:** early alpha. The core loop works end-to-end: the server boots, the client connects over WebSocket, you type in the input bar, the agent responds, and the conversation replays on reconnect. Real pi SDK integration and multi-workspace UI are in progress.
 
 ## Why use this?
 
@@ -109,13 +109,16 @@ Letting the agent commit, push, open, and (optionally) merge keeps the conversat
 
 ```
 pi-oven/
-├── crates/                      # Rust workspace (TBD: scaffold-runtime)
-│   ├── pi-oven/                 #   binary — native macOS app, main, keys, clipboard, themes
-│   ├── pi-oven-protocol/        #   wire types shared with the server
-│   ├── pi-oven-render/          #   cell grid, ratatui backend, wgpu+glyphon paint, theme
-│   ├── pi-oven-ui/              #   widgets and layouts (backend-agnostic)
+├── crates/
+│   ├── pi-oven/                 #   binary — native macOS app, main, keys, clipboard
+│   ├── pi-oven-protocol/        #   wire types shared with the server (Rust + serde)
+│   ├── pi-oven-render/          #   cell grid, ratatui backend, wgpu+glyphon paint
+│   ├── pi-oven-ui/              #   widgets and layouts (backend-agnostic ratatui)
 │   └── pi-oven-net/             #   WebSocket client, reconnect/replay
-├── packages/pi-oven-server/     # Node/TS server                   (TBD: scaffold-runtime)
+├── packages/pi-oven-server/     # Node 20 / TypeScript server
+│   ├── src/net/server.ts        #   WebSocket listener, auth, message routing
+│   ├── src/workspaces/          #   AgentSession, WorkspaceManager, EventLog
+│   └── src/protocol.ts          #   typed message envelope
 ├── docs/claude_plan.md          # Architecture plan, decisions, gotchas
 ├── openspec/                    # OpenSpec changes & approved specs
 ├── .claude/skills/              # OpenSpec skills for Claude Code
@@ -175,7 +178,7 @@ cargo run -p pi-oven --no-default-features --features dev-crossterm # terminal-b
 cargo bundle --release                                              # package as pi-oven.app under target/release/bundle/osx/
 ```
 
-`cargo run -p pi-oven` now opens a window with four pane shells: a sidebar (Projects), a tab strip, a conversation pane, and an input bar. All panes show placeholder labels — real state is wired in subsequent slices.
+`cargo run -p pi-oven` opens the client. With a server running and `PI_OVEN_SHARED_KEY` set it authenticates, populates the tab strip from the server's workspace list, and is ready to take input. `Enter` sends a message, `Esc` aborts the current turn, arrow keys scroll the conversation. Conversation replays automatically on reconnect.
 
 ### Recommended dev loop
 
@@ -203,6 +206,12 @@ pnpm --filter pi-oven-server start            # run the built server
 pnpm --filter pi-oven-server migrate:status   # list applied + pending migrations
 pnpm --filter pi-oven-server migrate:new <slug>   # scaffold the next-numbered migration
 pnpm --filter pi-oven-server migrate:reset    # DEV-only: wipe state.db and re-run migrations
+```
+
+**Stub mode** — run the server without a real pi install by setting `PI_OVEN_SDK_STUB=1`. The stub emits five synthetic events (text deltas, a tool call, a tool result) on a 200 ms timer per `Send` message, so the full client↔server loop is testable offline:
+
+```bash
+PI_OVEN_SDK_STUB=1 node packages/pi-oven-server/dist/index.js
 ```
 
 ### Networking
@@ -256,6 +265,7 @@ The server owns `~/.pi-oven/`:
 - `state.db` — primary SQLite database (mode `0600`).
 - `state.db.bak.<unix-ms>` — automatic snapshots taken before any pending migration runs; the 10 most recent are kept.
 - `logs/server-<YYYY-MM-DD>.ndjson` — daily NDJSON log files; the 7 most recent are kept.
+- `events/<workspace-id>/` — append-only NDJSON event logs, one file per workspace. Each line is `{ seq, ts, event }`. Used to replay missed events to reconnecting clients. Rotates at 64 MB.
 
 ## License
 
