@@ -18,6 +18,19 @@ If you drive a pi (or any other coding agent) over SSH from a Mac, you've probab
 
 It's deliberately single-user and self-hosted, leans on [OpenSpec](https://github.com/Fission-AI/OpenSpec) for feature proposals and your existing Forgejo / GitHub issues for bugs, and doesn't try to be its own task tracker.
 
+## Why pi?
+
+There's no shortage of coding agents. pi-oven wraps [pi](https://pi.dev) ([badlogic/pi-mono](https://github.com/badlogic/pi-mono)) specifically because:
+
+- **Open source, MIT-licensed.** No vendor lock-in. The full agent harness — tool runner, session model, slash commands, multimodal pipeline — is auditable and forkable. If a behaviour bites and upstream is slow, you can patch it.
+- **Designed to be embedded.** Pi ships an SDK (`createAgentSession`), a JSONL RPC mode (`pi --mode rpc`), and a structured event stream — all explicitly for hosting pi inside another tool. pi-oven uses the SDK in-process; no protocol reverse-engineering required.
+- **Skills and prompt templates as first-class extension points.** Slash-commands like `/opsx:propose` are skill packages dropped into `.pi/skills/`. Adding domain-specific automation is editing markdown, not forking the agent.
+- **Provider-agnostic.** Works with subscription LLM auth (Anthropic, OpenAI) or API keys, swap providers without rewriting your prompts. You're not betting on a single model vendor.
+- **Active maintainer, focused scope.** Pi keeps a tight surface area instead of growing into a platform — easier to reason about and easier to keep up with.
+- **Community ecosystem.** Skills, themes, and integrations get shared upstream; you benefit from work others do without giving up control of your own setup.
+
+The flip side: pi is younger and smaller than the household-name agents. We pin its version exactly and treat upgrades as deliberate PRs rather than continuous-update churn.
+
 ## Stack
 
 - **Client** — Rust native macOS app (`winit` + `wgpu` + `glyphon`, with `ratatui` via a custom backend writing into a cell grid). Packaged as a `.app` so cmd / option keys land in our event loop, not the host terminal's.
@@ -57,25 +70,37 @@ When the work is ready ("ship it"), the **agent itself** drives the post-work fl
 2. **Open PR** — agent calls the tracker (`gh` for GitHub, `tea` for Forgejo) to open a pull request targeting the default branch. Title and body come from the seed context plus a diff summary.
 3. **Reviewer agent spawns** — pi-oven detects the new PR and creates a paired **review workspace** in its own tab: a separate worktree on the PR's head, a fresh `pi` session seeded with a "review the diff and post findings" prompt. The reviewer has tracker comment scope only — it cannot push or merge.
 4. **You review** — read the reviewer agent's comments alongside the diff in the tracker UI. Iterate by going back to the implementation workspace and steering the agent to fix things; commit and push happen automatically; a fresh reviewer can be triggered against the new head.
-5. **Merge** — merging is **always manual**, done in the tracker UI. This is the only step pi-oven deliberately doesn't automate.
+5. **Merge** — configurable per project:
+   - **`user-ship`** (default) — say "ship it" and the implementing agent merges its own PR. Reviewer's verdict is informational, not gating.
+   - **`auto-on-approve`** — reviewer agent merges autonomously when its verdict is approve. Fastest, biggest trust delegation.
+   - **`human-tracker`** — agents never merge; you click merge in the tracker UI. Use for tightly-regulated projects.
 6. **Auto-cleanup** — once pi-oven sees the PR merged (webhook, polling fallback), it removes the worktree, deletes the remote branch as a safety-net, and closes both the implementation and review tabs.
 
-### Release branches (optional)
+### Release branches (optional, opt-in)
 
-A project can declare a release / production branch with its own promotion flow:
+A project can declare a release / production branch as a **protected zone** that's locked down from agentic writes.
 
-- **Manual** — TUI exposes a "New release PR" affordance. Invoking it opens a `default → release` PR; the same review and merge flow applies, with optional required checks gating the merge.
-- **Auto on checks** — pi-oven watches the tracker for check results on `default`. When all required checks pass on a commit, it auto-opens (or auto-merges, configurable) the release PR.
-- **None** (default) — `default` is the only mainline.
+When a `release_branch` is configured (e.g. `production`):
+
+- Agents **cannot push** to it.
+- Agents **cannot merge** into it, regardless of `merge_mode`.
+- Agents **may open** `default → release_branch` PRs so they can compose release notes / changelogs. You merge yourself in the tracker UI.
+
+Promotion modes when a release branch is set:
+
+- **Manual** — TUI exposes a "New release PR" affordance. Invoking it spins up a fresh release workspace where the agent opens the PR with appropriate notes. Reviewer agent spawns as usual; you click merge.
+- **Auto on checks** — pi-oven watches tracker check results on `default`. When all required checks pass, the agent auto-opens the release PR for you to review. **The merge is still human-only.**
+- **None** (default) — no release branch; `default` is the only mainline; step 5's `merge_mode` applies.
 
 ### Why agent-driven push and PR?
 
-Letting the agent commit, push, and open the PR keeps the conversational loop tight — "ship it" is the same UX as any other instruction, no context switching out of the TUI. Mitigations for the elevated trust:
+Letting the agent commit, push, open, and (optionally) merge keeps the conversational loop tight — "ship it" is the same UX as any other instruction, no context switching out of the TUI. Mitigations for the elevated trust:
 
 - Tokens are scoped per project; one project's compromise doesn't escalate to others.
-- Agents push only to their worktree's branch — never to `default` or `release_branch`.
-- The reviewer agent has comment-only scope on the tracker; it cannot push or merge.
-- Merge is the only step that crosses into shared state, and it's deliberately manual.
+- Agents push only to their worktree's branch — never directly to `default` (always via PR), and never to `release_branch` at all.
+- Reviewer agent's tracker scope is comments + approve/request-changes, plus merge-into-`default` only when `merge_mode = 'auto-on-approve'`. It cannot push code anywhere, and it cannot merge into `release_branch` even on auto-merge.
+- The optional release branch is the project's hard safety net: agents may open release PRs but never merge them; that decision is always yours.
+- `merge_mode = 'human-tracker'` is available per-project when you want every merge — even to `default` — to be a human action.
 
 ## Layout
 

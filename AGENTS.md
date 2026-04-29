@@ -19,11 +19,38 @@ Greenfield. One in-flight OpenSpec change: [openspec/changes/scaffold-runtime/](
 
 ## Tech stack
 
-- **Client** (`crates/pi-oven`): Rust. `winit` + `wgpu` + `glyphon`, `ratatui` via a custom `Backend` writing into a cell grid. Packaged as a native macOS `.app`. **Not a terminal program** — owning the window is the entire point, because terminal apps on macOS can't reliably see `cmd`/`option` keys.
-- **Server** (`packages/pi-oven-server`): Node 20+ / TypeScript. `better-sqlite3`, `pino`, `proper-lockfile`, `@iarna/toml`. Will embed the pi SDK in-process (`@mariozechner/pi-coding-agent`) once scaffolding lands.
-- **Wire protocol** (future): WebSocket + JSON, shared-key auth, single user.
-- **Server state:** SQLite at `~/.pi-oven/state.db`. Forward-only migrations with checksum verification.
-- **Server-owned filesystem:** `~/.pi-oven/` (config, lock, db + backups, logs, future event logs).
+- **Client** — Rust workspace under `crates/`, split into five members so iteration is fast:
+  - `pi-oven-protocol` — wire types
+  - `pi-oven-render` — cell grid, `RatatuiGridBackend`, wgpu + glyphon paint, theme uniform
+  - `pi-oven-ui` — ratatui widgets and layouts (Backend-trait-agnostic)
+  - `pi-oven-net` — WebSocket client + reconnect/replay
+  - `pi-oven` — binary; main, app shell, key dispatch, clipboard, theme loader. Packaged as a macOS `.app`. **Not a terminal program** — owning the window is the entire point, because terminal apps on macOS can't reliably see `cmd`/`option` keys.
+- **Server** (`packages/pi-oven-server`) — Node 20+ / TypeScript. `better-sqlite3`, `pino`, `proper-lockfile`, `@iarna/toml`. Will embed the pi SDK in-process (`@mariozechner/pi-coding-agent`) once scaffolding lands.
+- **Wire protocol** (future) — WebSocket + JSON, shared-key auth, single user.
+- **Server state** — SQLite at `~/.pi-oven/state.db`. Forward-only migrations with checksum verification.
+- **Server-owned filesystem** — `~/.pi-oven/` (config, lock, db + backups, logs, future event logs, future attachments).
+
+## Dev iteration
+
+Compile time is the dominant friction in client work; treat it as a first-class concern. Full rationale lives in [docs/claude_plan.md](docs/claude_plan.md) → "Developer iteration speed".
+
+- **Crate split discipline.** Put new code in the most specific crate that will hold it. Putting widgets in `pi-oven-render` or types in `pi-oven-ui` defeats the split.
+- **Widgets are Backend-trait-agnostic.** `pi-oven-ui` writes against `ratatui::backend::Backend`, never against `pi-oven-render` directly. The binary picks which backend to construct.
+- **Feature flags on the binary** (mutually exclusive):
+  - `dev-wgpu` (default) — real native rendering. Required to validate `cmd`/`option` modifier capture.
+  - `dev-crossterm` — terminal-based ratatui via `CrosstermBackend`. Skips wgpu/winit startup; use for fast widget iteration. Modifier-key handling not validated under this backend.
+- **Recommended dev loop:**
+  ```bash
+  # one terminal — fast type-check feedback on whichever crate you're editing
+  cargo watch -x 'check -p pi-oven-ui'
+
+  # another terminal — actual launches
+  cargo run -p pi-oven                                                 # native window (dev-wgpu)
+  cargo run -p pi-oven --no-default-features --features dev-crossterm  # terminal UI
+  ```
+- **Linker.** `lld` is wired up via [.cargo/config.toml](.cargo/config.toml) for the macOS targets. Requires `brew install llvm`. Saves 1-3s per incremental link.
+- **Server hot reload** — `tsx watch` is on `pnpm --filter pi-oven-server dev`. Server restarts re-attach pi sessions from disk and replay buffered events to the client; restart looks like a brief disconnect from the client's perspective.
+- **Don't disable the dev profile / linker config.** They're load-bearing for the iteration story.
 
 ## Workflow conventions
 

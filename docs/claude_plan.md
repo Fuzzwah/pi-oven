@@ -167,9 +167,11 @@ CREATE TABLE workspaces (
   created_at          INTEGER NOT NULL
 );
 
--- Future migration adds release-branch fields to projects:
+-- Future migration adds merge / release-branch fields to projects:
+--   merge_mode              TEXT NOT NULL DEFAULT 'user-ship',
+--                                        -- 'user-ship' | 'auto-on-approve' | 'human-tracker'
 --   release_branch          TEXT,        -- null = no release branch
---   release_mode            TEXT,        -- 'manual' | 'auto-on-checks' | null
+--   release_mode            TEXT,        -- 'manual' | 'auto-on-checks' | null (only meaningful when release_branch IS NOT NULL)
 --   release_required_checks TEXT         -- JSON array of check names
 
 CREATE TABLE settings (
@@ -358,21 +360,33 @@ The "after the work is done" half of the loop is **agent-driven**: the same `pi`
 
 **5. Code review iteration.** Reviewer agent's comments land on the PR via the tracker API. You read them in the tracker's UI alongside the diff. Address feedback by switching back to the implementation workspace and asking the agent to fix things → it commits and pushes → you (or the system, configurable) trigger a fresh reviewer agent on the updated head.
 
-**6. Merge.** Merging is **always manual** — done in the tracker's UI, not by an agent. When the server sees the PR merged (webhook/poll):
+**6. Merge.** The merge step is configurable per project via `projects.merge_mode`:
+- **`merge_mode = 'user-ship'`** (default): the implementing agent waits for a "ship it" steer from you, then calls the tracker's merge endpoint itself. The reviewer's verdict is shown in the conversation pane but is informational, not gating. You stay in the TUI.
+- **`merge_mode = 'auto-on-approve'`**: if the reviewer agent's verdict is `approve` with no blocking issues, the reviewer agent merges autonomously. Fastest loop, biggest trust delegation. Cancellable by stepping in before the verdict lands.
+- **`merge_mode = 'human-tracker'`**: agents never merge — you click the merge button in the tracker's UI. Use for tightly-regulated projects.
+
+Regardless of `merge_mode`, when the PR target is the project's `release_branch` (see step 7), **agents cannot merge** — that protection is hard-coded.
+
+When the server sees the PR merged (webhook with polling fallback) — by an agent or by a human — it:
 - Implementation workspace: `status = 'closed'`, `git worktree remove --force` + `rm -rf <worktree_path>`, remote branch deleted (the tracker may already do this; we explicitly request it as a safety net), local branch retained by default.
 - Review workspace: same cleanup if it's still open.
 - Both tabs close in the TUI; if either was the focused tab, focus moves to the next workspace.
 
-**7. Optional: promotion to release branch.** Per-project setting:
-- **`release_branch = NULL`** (default): default branch is the only mainline. Step 6 ends the loop.
-- **`release_mode = 'manual'`**: TUI exposes a "New release PR" affordance per project. Invoking it opens a `default → <release_branch>` PR; the same review flow (step 4 onward) applies. The PR's required checks come from `release_required_checks`.
-- **`release_mode = 'auto-on-checks'`**: server watches tracker check results on `default`; when all `release_required_checks` succeed on a commit, it auto-opens (and optionally auto-merges) the release PR. Useful for projects where promotion is purely gating, not deliberation.
+**7. Optional: promotion to release branch.** Per-project, opt-in:
+- **`release_branch = NULL`** (default): no protected branch. `default` is the only mainline; merging there follows step 6's `merge_mode`. Step 6 ends the loop.
+- **`release_branch = "production"`** (or any branch name) — a **protected zone**. The hard rules:
+  - Agents **cannot push** to this branch.
+  - Agents **cannot merge** into this branch — neither the implementing agent nor the reviewer agent, regardless of `merge_mode`.
+  - Agents **may open** `default → release_branch` PRs (so they can compose release notes / changelogs / impact summaries) and a reviewer agent still spawns. **You** click merge in the tracker.
+- **`release_mode = 'manual'`** (when `release_branch` is set): TUI exposes a "New release PR" affordance per project. Invoking it spins up a fresh release workspace where the implementing agent opens the PR with appropriate notes; reviewer agent spawns as usual; you merge in the tracker.
+- **`release_mode = 'auto-on-checks'`** (when `release_branch` is set): server watches tracker check results on `default`; when all `release_required_checks` succeed on a commit, the agent auto-opens the release PR. **The merge is still human-only.** Useful for projects where you always want a release PR in flight to review.
 
-**Why agent-driven push/PR?** It keeps the conversational loop tight — "this looks good, ship it" is the same UX as any other instruction, no context switching. Mitigations for the elevated trust:
+**Why agent-driven push and PR?** It keeps the conversational loop tight — "this looks good, ship it" is the same UX as any other instruction. Mitigations for the elevated trust:
 - Tokens are scoped per-project; one project's compromise doesn't escalate to others.
-- Agents push only to their worktree's branch, never to `default` or `release_branch`.
-- The reviewer agent has comment-only scope on the tracker; it cannot push or merge.
-- Merge is the only step that crosses into shared state, and it's deliberately manual.
+- Agents push only to their worktree's branch — never directly to `default` (always via PR), and never to `release_branch` at all when one is configured.
+- The reviewer agent has tracker write scope for **review comments and merging** under `auto-on-approve`; it cannot push to any branch, and it cannot merge into `release_branch` even when configured to auto-merge.
+- The release branch, when configured, is the project's hard safety net: it's fully protected from agentic writes (push and merge), period. Agents may open release PRs for you to review and merge yourself, nothing more.
+- `merge_mode = 'human-tracker'` is available per-project when you want every merge — even to `default` — to be a human action.
 
 ---
 
