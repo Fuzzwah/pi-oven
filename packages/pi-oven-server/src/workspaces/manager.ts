@@ -1,3 +1,4 @@
+import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { WebSocket } from "ws";
 import { AgentSession } from "./session.js";
@@ -20,15 +21,19 @@ export class WorkspaceManager {
 
   async init(dataDir: string): Promise<void> {
     const workspaceId = 1;
+    const cwd = join(dataDir, "workspaces", String(workspaceId));
+    await mkdir(cwd, { recursive: true, mode: 0o700 });
+
     const logDir = join(dataDir, "events", String(workspaceId));
     const log = await EventLog.open(logDir);
     this.logs.set(workspaceId, log);
     this.statusMap.set(workspaceId, "idle");
 
-    const session = new AgentSession(workspaceId, log, {
+    const session = new AgentSession(workspaceId, log, cwd, {
       onEvent: (event) => this.onEvent(event),
       onStatus: (status) => this.onStatus(status),
     });
+    await session.init();
     this.sessions.set(workspaceId, session);
   }
 
