@@ -1890,7 +1890,10 @@ dependencies = [
 name = "pi-oven-net"
 version = "0.0.0"
 dependencies = [
+ "anyhow",
+ "futures-util",
  "pi-oven-protocol",
+ "serde_json",
  "tokio",
  "tokio-tungstenite",
  "tracing",

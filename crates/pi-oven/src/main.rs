@@ -13,6 +13,8 @@ compile_error!(
 #[cfg(feature = "dev-wgpu")]
 mod keys;
 
+const CLIENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 fn init_tracing() {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -22,10 +24,75 @@ fn init_tracing() {
         .init();
 }
 
+/// Spawn the tokio runtime on a dedicated OS thread and start the reconnecting
+/// WebSocket client.  Communicates with the winit/crossterm thread via the
+/// returned channel receiver.
+///
+/// If `PI_OVEN_SHARED_KEY` is absent, logs a warning and returns `None` —
+/// the UI continues to work for development without networking (task 9.1).
+fn spawn_network(
+    net_event_tx: std::sync::mpsc::Sender<pi_oven_net::ConnectionState>,
+) -> Option<()> {
+    let url = std::env::var("PI_OVEN_SERVER_URL")
+        .unwrap_or_else(|_| "ws://localhost:7878".to_string());
+    let key = match std::env::var("PI_OVEN_SHARED_KEY") {
+        Ok(k) if !k.is_empty() => k,
+        _ => {
+            tracing::warn!(
+                "PI_OVEN_SHARED_KEY not set — running without networking (UI-only mode)"
+            );
+            return None;
+        }
+    };
+
+    // Run the tokio runtime on a separate thread so it doesn't interfere with
+    // the winit event loop on the main thread (task 9.2).
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        rt.block_on(async move {
+            let handle = pi_oven_net::start_reconnecting(url, key, CLIENT_VERSION.to_string());
+            let mut state_rx = handle.state_rx;
+
+            loop {
+                let state = state_rx.borrow().clone();
+
+                // Log state changes at info level (task 9.3).
+                match &state {
+                    pi_oven_net::ConnectionState::Connecting => {
+                        tracing::info!("net: connecting");
+                    }
+                    pi_oven_net::ConnectionState::Authenticated => {
+                        tracing::info!("net: authenticated");
+                    }
+                    pi_oven_net::ConnectionState::Reconnecting { in_seconds } => {
+                        tracing::info!(in_seconds, "net: reconnecting");
+                    }
+                    pi_oven_net::ConnectionState::Failed { reason } => {
+                        tracing::info!(%reason, "net: disconnected (terminal)");
+                    }
+                }
+
+                // Forward state to the UI thread.
+                if net_event_tx.send(state).is_err() {
+                    break; // UI thread gone.
+                }
+
+                if state_rx.changed().await.is_err() {
+                    break; // Reconnect task ended.
+                }
+            }
+        });
+    });
+
+    Some(())
+}
+
 #[cfg(feature = "dev-wgpu")]
 fn main() -> anyhow::Result<()> {
     init_tracing();
     tracing::info!("pi-oven starting (dev-wgpu)");
+    let (net_tx, _net_rx) = std::sync::mpsc::channel::<pi_oven_net::ConnectionState>();
+    spawn_network(net_tx);
     wgpu_main::run()
 }
 
@@ -33,6 +100,8 @@ fn main() -> anyhow::Result<()> {
 fn main() -> anyhow::Result<()> {
     init_tracing();
     tracing::info!("pi-oven starting (dev-crossterm)");
+    let (net_tx, _net_rx) = std::sync::mpsc::channel::<pi_oven_net::ConnectionState>();
+    spawn_network(net_tx);
     crossterm_main::run()
 }
 

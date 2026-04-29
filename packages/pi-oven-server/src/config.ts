@@ -5,10 +5,18 @@ import TOML from "@iarna/toml";
 
 export type LogLevel = "trace" | "debug" | "info" | "warn" | "error" | "fatal";
 
+export interface NetConfig {
+  listen_addr: string;
+  shared_key: string;
+  origin_allowlist: string[];
+  allow_null_origin: boolean;
+}
+
 export interface ServerConfig {
   data_dir: string;
   log_level: LogLevel;
   tz: string;
+  net: NetConfig;
   /** True when the config file was absent and defaults were used. */
   defaulted: boolean;
 }
@@ -23,6 +31,7 @@ export interface LoadConfigOptions {
 const DEFAULT_DATA_DIR = "~/.pi-oven";
 const DEFAULT_LOG_LEVEL: LogLevel = "info";
 const DEFAULT_TZ = "UTC";
+const DEFAULT_LISTEN_ADDR = "127.0.0.1:7878";
 
 const VALID_LOG_LEVELS: ReadonlySet<LogLevel> = new Set([
   "trace",
@@ -37,6 +46,13 @@ export class ConfigError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "ConfigError";
+  }
+}
+
+export class ConfigMissingFieldError extends ConfigError {
+  constructor(public readonly field: string) {
+    super(`required config field missing: ${field}`);
+    this.name = "ConfigMissingFieldError";
   }
 }
 
@@ -132,10 +148,46 @@ export function loadConfig(opts: LoadConfigOptions = {}): ServerConfig {
     tz = asTimeZone(env.PI_OVEN_TZ, "PI_OVEN_TZ");
   }
 
+  // [net] section
+  const netTable =
+    typeof fileValues.net === "object" && fileValues.net !== null
+      ? (fileValues.net as Record<string, unknown>)
+      : {};
+
+  const listen_addr =
+    typeof netTable.listen_addr === "string"
+      ? netTable.listen_addr
+      : DEFAULT_LISTEN_ADDR;
+
+  const origin_allowlist = Array.isArray(netTable.origin_allowlist)
+    ? netTable.origin_allowlist.filter((x): x is string => typeof x === "string")
+    : [];
+
+  const allow_null_origin =
+    typeof netTable.allow_null_origin === "boolean"
+      ? netTable.allow_null_origin
+      : true;
+
+  // shared_key: config file takes priority over env var (task 3.3)
+  let shared_key: string | undefined;
+  if (typeof netTable.shared_key === "string" && netTable.shared_key.length > 0) {
+    shared_key = netTable.shared_key;
+  } else if (
+    typeof env.PI_OVEN_SHARED_KEY === "string" &&
+    env.PI_OVEN_SHARED_KEY.length > 0
+  ) {
+    shared_key = env.PI_OVEN_SHARED_KEY;
+  }
+
+  if (!shared_key) {
+    throw new ConfigMissingFieldError("shared_key");
+  }
+
   return {
     data_dir: expandHome(data_dir),
     log_level,
     tz,
     defaulted,
+    net: { listen_addr, shared_key, origin_allowlist, allow_null_origin },
   };
 }

@@ -203,11 +203,53 @@ pnpm --filter pi-oven-server migrate:new <slug>   # scaffold the next-numbered m
 pnpm --filter pi-oven-server migrate:reset    # DEV-only: wipe state.db and re-run migrations
 ```
 
+### Networking
+
+The client and server communicate over a single WebSocket with shared-key authentication.
+
+**Server** — requires a shared key before it will start. Set it in `~/.pi-oven/server.toml` (preferred, file mode `0600`):
+
+```toml
+[net]
+shared_key = "your-secret-key-here"
+listen_addr = "127.0.0.1:7878"   # default; omit to keep this value
+# origin_allowlist = ["https://your-app.example.com"]  # empty by default
+# allow_null_origin = true  # default; accepts bundled .app clients
+```
+
+Or via environment variable (handy for development):
+
+```bash
+PI_OVEN_SHARED_KEY=your-secret-key pnpm --filter pi-oven-server dev
+```
+
+> Config file value takes priority over the env var when both are set.
+
+**Client** — set env vars before running:
+
+```bash
+# Required:
+export PI_OVEN_SHARED_KEY=your-secret-key
+
+# Optional (default is ws://localhost:7878):
+export PI_OVEN_SERVER_URL=ws://10.1.1.232:7878  # LAN deployment
+
+RUST_LOG=pi_oven_net=debug,info cargo run -p pi-oven
+```
+
+If `PI_OVEN_SHARED_KEY` is absent, the client starts in UI-only mode (no network) — useful while iterating on widgets without a server running.
+
+To see only networking log lines:
+
+```bash
+RUST_LOG=pi_oven_net=debug cargo run -p pi-oven
+```
+
 ### State directory
 
 The server owns `~/.pi-oven/`:
 
-- `server.toml` — optional config; mode must be `0600` or stricter, env vars (`PI_OVEN_DATA_DIR`, `PI_OVEN_LOG_LEVEL`, `PI_OVEN_TZ`) override file values.
+- `server.toml` — optional config; mode must be `0600` or stricter, env vars (`PI_OVEN_DATA_DIR`, `PI_OVEN_LOG_LEVEL`, `PI_OVEN_TZ`, `PI_OVEN_SHARED_KEY`) override file values (config file wins for `shared_key` when both set).
 - `server.lock` — single-instance lock (auto-released on exit).
 - `state.db` — primary SQLite database (mode `0600`).
 - `state.db.bak.<unix-ms>` — automatic snapshots taken before any pending migration runs; the 10 most recent are kept.
