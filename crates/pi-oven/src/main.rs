@@ -288,9 +288,9 @@ mod wgpu_main {
                 "keyboard event"
             );
             match action {
-                KeyAction::CmdW => { event_loop.exit(); return; }
                 KeyAction::CmdEqual => { self.adjust_font_size(FONT_SIZE_STEP); return; }
                 KeyAction::CmdMinus => { self.adjust_font_size(-FONT_SIZE_STEP); return; }
+                KeyAction::CmdLetter('q') => { event_loop.exit(); return; }
                 KeyAction::CmdLetter('c') => {
                     if let Some(text) = self.app_state.editor.selected_text() {
                         match arboard::Clipboard::new().and_then(|mut cb| cb.set_text(text)) {
