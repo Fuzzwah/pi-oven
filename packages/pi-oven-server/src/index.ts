@@ -8,6 +8,7 @@ import { initLogger } from "./log.js";
 import { openDb } from "./state/db.js";
 import { migrate } from "./state/migrate.js";
 import { startListener, type ListenerHandle } from "./net/server.js";
+import { WorkspaceManager } from "./workspaces/manager.js";
 
 const VERSION = "0.0.0";
 
@@ -78,6 +79,10 @@ async function boot(): Promise<void> {
     }
 
     // Listener starts after migrations succeed, before "ready" (tasks 5.1, D8).
+    step = "workspace_manager";
+    const manager = new WorkspaceManager();
+    await manager.init(cfg.data_dir);
+
     step = "bind";
     listener = await startListener({
       listen_addr: cfg.net.listen_addr,
@@ -85,6 +90,7 @@ async function boot(): Promise<void> {
       origin_allowlist: cfg.net.origin_allowlist,
       allow_null_origin: cfg.net.allow_null_origin,
       logger,
+      manager,
     });
 
     logger.info(

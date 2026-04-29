@@ -1926,6 +1926,7 @@ version = "0.0.0"
 dependencies = [
  "pi-oven-protocol",
  "ratatui",
+ "serde_json",
 ]
 
 [[package]]

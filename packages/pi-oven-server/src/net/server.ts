@@ -1,6 +1,7 @@
 import { WebSocketServer, WebSocket } from "ws";
 import type { Logger } from "pino";
 import { decodeMsg, encodeMsg } from "../protocol.js";
+import type { WorkspaceManager } from "../workspaces/manager.js";
 
 const SERVER_VERSION = "0.0.0";
 const HANDSHAKE_TIMEOUT_MS = 5_000;
@@ -13,6 +14,7 @@ export interface ListenerOpts {
   origin_allowlist: string[];
   allow_null_origin: boolean;
   logger: Logger;
+  manager?: WorkspaceManager;
 }
 
 export interface ListenerHandle {
@@ -50,12 +52,9 @@ interface AuthenticatedSocket {
 }
 
 export async function startListener(opts: ListenerOpts): Promise<ListenerHandle> {
-  const { listen_addr, shared_key, origin_allowlist, allow_null_origin, logger } = opts;
+  const { listen_addr, shared_key, origin_allowlist, allow_null_origin, logger, manager } = opts;
   const { host, port } = parseAddr(listen_addr);
 
-  // Module-level map of authenticated sockets keyed by shared_key (task 4.4).
-  // There is only one shared_key in this single-user system, but the structure
-  // generalises cleanly and matches the spec.
   const authenticated = new Map<string, AuthenticatedSocket>();
 
   const wss = await new Promise<WebSocketServer>((resolve, reject) => {
@@ -86,12 +85,10 @@ export async function startListener(opts: ListenerOpts): Promise<ListenerHandle>
     server.once("error", reject);
   });
 
-  // Ongoing server-level error handler (post-bind).
   wss.on("error", (err) => {
     logger.error({ err: (err as Error).message }, "WebSocket server error");
   });
 
-  // Heartbeat sweep: close connections silent for more than IDLE_TIMEOUT_MS (task 4.5).
   const heartbeatInterval = setInterval(() => {
     const now = Date.now();
     for (const [key, entry] of authenticated) {
@@ -106,7 +103,6 @@ export async function startListener(opts: ListenerOpts): Promise<ListenerHandle>
   wss.on("connection", (ws) => {
     let authenticated_this = false;
 
-    // 5s handshake timer (task 4.3).
     const handshakeTimer = setTimeout(() => {
       if (!authenticated_this) {
         ws.close(4408, "handshake_timeout");
@@ -115,7 +111,6 @@ export async function startListener(opts: ListenerOpts): Promise<ListenerHandle>
 
     ws.on("message", (data) => {
       if (!authenticated_this) {
-        // First message — handshake path.
         clearTimeout(handshakeTimer);
 
         const msg = decodeMsg(data.toString());
@@ -131,22 +126,28 @@ export async function startListener(opts: ListenerOpts): Promise<ListenerHandle>
           return;
         }
 
-        // Single-connection invariant: replace any existing authenticated socket (task 4.4).
         const existing = authenticated.get(shared_key);
         if (existing) {
+          manager?.setClient(null);
           existing.ws.close(4002, "replaced");
           authenticated.delete(shared_key);
         }
 
         authenticated.set(shared_key, { ws, lastSeenAt: Date.now() });
         authenticated_this = true;
+        manager?.setClient(ws);
 
         logger.info({ client_version: msg.client_version }, "authenticated");
-        ws.send(encodeMsg({ type: "Welcome", server_version: SERVER_VERSION }));
+        ws.send(
+          encodeMsg({
+            type: "Welcome",
+            server_version: SERVER_VERSION,
+            workspaces: manager?.getSnapshots() ?? [],
+          }),
+        );
         return;
       }
 
-      // Authenticated path — update last_seen and handle messages (tasks 4.5, 4.6).
       const entry = authenticated.get(shared_key);
       if (entry) entry.lastSeenAt = Date.now();
 
@@ -155,6 +156,46 @@ export async function startListener(opts: ListenerOpts): Promise<ListenerHandle>
 
       if (msg.type === "Ping") {
         ws.send(encodeMsg({ type: "Pong", client_ts_ms: msg.ts_ms, server_ts_ms: Date.now() }));
+        return;
+      }
+
+      if (msg.type === "Send") {
+        const session = manager?.getSession(msg.workspace_id);
+        if (!session) {
+          ws.send(
+            encodeMsg({
+              type: "ErrorEvent",
+              workspace_id: msg.workspace_id,
+              reason: "unknown_workspace",
+            }),
+          );
+          return;
+        }
+        void session.queue(msg.text, msg.queue_mode as "steer" | "followup");
+        return;
+      }
+
+      if (msg.type === "Abort") {
+        const session = manager?.getSession(msg.workspace_id);
+        if (!session) return;
+        void session.abort();
+        return;
+      }
+
+      if (msg.type === "Resume") {
+        const session = manager?.getSession(msg.workspace_id);
+        if (!session) {
+          ws.send(
+            encodeMsg({
+              type: "ErrorEvent",
+              workspace_id: msg.workspace_id,
+              reason: "unknown_workspace",
+            }),
+          );
+          return;
+        }
+        void handleResume(ws, manager!, msg.workspace_id, msg.last_seq);
+        return;
       }
     });
 
@@ -163,6 +204,7 @@ export async function startListener(opts: ListenerOpts): Promise<ListenerHandle>
       const entry = authenticated.get(shared_key);
       if (entry?.ws === ws) {
         authenticated.delete(shared_key);
+        manager?.setClient(null);
       }
     });
   });
@@ -186,4 +228,44 @@ export async function startListener(opts: ListenerOpts): Promise<ListenerHandle>
       });
     },
   };
+}
+
+async function handleResume(
+  ws: WebSocket,
+  manager: WorkspaceManager,
+  workspaceId: number,
+  lastSeq: number,
+): Promise<void> {
+  const log = manager.getLog(workspaceId);
+  if (!log) return;
+
+  // Collect events from log with seq > lastSeq
+  const events: Array<{ seq: number; ts: number; event: unknown }> = [];
+  for await (const entry of log.replay(lastSeq)) {
+    events.push(entry);
+  }
+
+  // Merge ring buffer events (deduplicate by seq, fill any gap between log replay and live)
+  const ringEvents = manager.getRingBuffer().filter((e) => e.seq > lastSeq);
+  const seenSeqs = new Set(events.map((e) => e.seq));
+  for (const re of ringEvents) {
+    if (!seenSeqs.has(re.seq)) {
+      events.push({ seq: re.seq, ts: 0, event: re.event });
+      seenSeqs.add(re.seq);
+    }
+  }
+
+  // Sort by seq
+  events.sort((a, b) => a.seq - b.seq);
+
+  const latestSeq = events.length > 0 ? events[events.length - 1]!.seq : lastSeq;
+
+  ws.send(
+    encodeMsg({
+      type: "ReplayBatch",
+      workspace_id: workspaceId,
+      events,
+      latest_seq: latestSeq,
+    }),
+  );
 }

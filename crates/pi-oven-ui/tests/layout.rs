@@ -2,7 +2,7 @@ use pi_oven_ui::AppState;
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
 
-fn render_with(cols: u16, rows: u16, state: &AppState) -> ratatui::buffer::Buffer {
+fn render_with(cols: u16, rows: u16, state: &mut AppState) -> ratatui::buffer::Buffer {
     let backend = TestBackend::new(cols, rows);
     let mut terminal = Terminal::new(backend).unwrap();
     terminal.draw(|f| pi_oven_ui::render(f, state)).unwrap();
@@ -10,7 +10,7 @@ fn render_with(cols: u16, rows: u16, state: &AppState) -> ratatui::buffer::Buffe
 }
 
 fn render_at(cols: u16, rows: u16) -> ratatui::buffer::Buffer {
-    render_with(cols, rows, &AppState::default())
+    render_with(cols, rows, &mut AppState::default())
 }
 
 fn row_text(buf: &ratatui::buffer::Buffer, row: u16, cols: std::ops::Range<u16>) -> String {
@@ -241,7 +241,7 @@ fn layout_100x30_conversation_placeholder() {
 fn layout_100x30_empty_tabs_placeholder() {
     let mut state = AppState::default();
     state.tabs.clear();
-    let buf = render_with(100, 30, &state);
+    let buf = render_with(100, 30, &mut state);
     let tabs_body = row_text(&buf, 1, 29..99);
     assert!(
         tabs_body.contains("(no workspaces)"),
@@ -266,7 +266,7 @@ fn tabs_truncate_overflow() {
         })
         .collect();
 
-    let buf = render_with(100, 30, &state);
+    let buf = render_with(100, 30, &mut state);
     let tabs_row = row_text(&buf, 1, 28..100);
     assert!(
         tabs_row.contains("…"),

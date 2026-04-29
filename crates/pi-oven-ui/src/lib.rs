@@ -11,7 +11,7 @@ mod sidebar;
 mod status_bar;
 mod tabs;
 
-pub use conversation::render_conversation;
+pub use conversation::{append_agent_event, render_conversation, RenderedEvent};
 pub use editor::InputEditor;
 pub use header::render_header;
 pub use input::render_input;
@@ -23,8 +23,7 @@ pub use tabs::render_tabs;
 use ratatui::layout::{Constraint, Layout};
 use ratatui::Frame;
 
-/// Conversation header values shown above the message body. Placeholder data
-/// today; will be fed by the wire transport once it carries session metadata.
+/// Conversation header values shown above the message body.
 pub struct ConversationHeader {
     pub title: String,
     pub elapsed_secs: u64,
@@ -32,13 +31,18 @@ pub struct ConversationHeader {
     pub tokens_out: u64,
 }
 
-/// Bottom status-bar values. Placeholder data today; will be fed by the wire
-/// transport once it carries session metadata.
+/// Bottom status-bar values.
 pub struct StatusBar {
     pub model: String,
     pub ctx_pct: u8,
     pub branch: String,
     pub pr: Option<u32>,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum AgentStatusKind {
+    Running,
+    Idle,
 }
 
 #[derive(Clone, Copy)]
@@ -72,6 +76,16 @@ pub struct AppState {
     pub status: StatusBar,
     pub tabs: Vec<TabCell>,
     pub legend: Vec<(String, String)>,
+    /// Live session conversation buffer.
+    pub conversation: Vec<RenderedEvent>,
+    /// Lines scrolled from the top of the conversation.
+    pub scroll_offset: usize,
+    /// When true, viewport auto-scrolls to follow new events.
+    pub follow_mode: bool,
+    /// Current status of the active workspace session.
+    pub workspace_status: AgentStatusKind,
+    /// Highest seq received from the server (for Resume on reconnect).
+    pub last_seq: u64,
 }
 
 impl Default for AppState {
@@ -135,11 +149,17 @@ impl Default for AppState {
                 ("C-c".into(), "stop".into()),
                 ("C-q".into(), "quit".into()),
             ],
+            conversation: Vec::new(),
+            scroll_offset: 0,
+            follow_mode: true,
+            workspace_status: AgentStatusKind::Idle,
+            last_seq: 0,
         }
     }
 }
 
-pub fn render(frame: &mut Frame, state: &AppState) {
+
+pub fn render(frame: &mut Frame, state: &mut AppState) {
     let [sidebar_area, right_area] =
         Layout::horizontal([Constraint::Length(28), Constraint::Min(0)]).areas(frame.area());
 
@@ -166,7 +186,7 @@ pub fn render(frame: &mut Frame, state: &AppState) {
     render_sidebar(sidebar_area, buf);
     render_tabs(tabs_area, buf, &state.tabs);
     render_header(header_area, buf, &state.header);
-    render_conversation(conversation_area, buf);
+    render_conversation(conversation_area, buf, state);
     render_input(input_area, buf, &state.editor, state.cursor_visible);
     render_status_bar(status_area, buf, &state.status);
     render_legend(legend_area, buf, &state.legend);
