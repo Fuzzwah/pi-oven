@@ -445,10 +445,17 @@ fn build_row_spans(grid: &Grid, y: u16) -> Vec<(String, Attrs<'static>)> {
 }
 
 fn state_to_attrs(state: (RColor, RColor, Modifier, String)) -> (String, Attrs<'static>) {
-    let (fg, _bg, modifiers, text) = state;
+    let (fg, bg, modifiers, text) = state;
     let mut attrs = Attrs::new().family(Family::Monospace);
-    if let Some(c) = ratatui_color_to_glyphon(fg) {
-        attrs = attrs.color(c);
+    // REVERSED swaps fg/bg; for glyphs we care about the effective foreground.
+    let effective_fg = if modifiers.contains(Modifier::REVERSED) { bg } else { fg };
+    match ratatui_color_to_glyphon(effective_fg) {
+        Some(c) => { attrs = attrs.color(c); }
+        None if modifiers.contains(Modifier::REVERSED) => {
+            // bg was Reset → effective fg should match our dark background
+            attrs = attrs.color(GColor::rgb(0x12, 0x12, 0x12));
+        }
+        None => {} // fg was Reset → fall through to TextArea default_color (white)
     }
     if modifiers.contains(Modifier::BOLD) {
         attrs = attrs.weight(glyphon::Weight::BOLD);
@@ -485,8 +492,17 @@ fn build_fill_rects(grid: &Grid, metrics: CellMetrics) -> Vec<FillRect> {
     let underline_offset = (metrics.line_height_px * UNDERLINE_OFFSET_RATIO).max(1.0);
 
     for y in 0..grid.rows() {
-        for (start, end, color) in collect_row_runs(grid, y, |cell| ratatui_color_to_rgba(cell.bg))
-        {
+        for (start, end, color) in collect_row_runs(grid, y, |cell| {
+            if cell.attrs.contains(Modifier::REVERSED) {
+                // REVERSED: use fg as the background color; Reset fg → white
+                Some(match cell.fg {
+                    RColor::Reset => [1.0, 1.0, 1.0, 1.0],
+                    c => ratatui_color_to_rgba(c).unwrap_or([1.0, 1.0, 1.0, 1.0]),
+                })
+            } else {
+                ratatui_color_to_rgba(cell.bg)
+            }
+        }) {
             rects.push(FillRect {
                 left: start * metrics.cell_width_px,
                 top: y as f32 * metrics.line_height_px,
