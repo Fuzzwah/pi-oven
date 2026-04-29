@@ -12,9 +12,9 @@ use ratatui::style::{Color, Modifier};
 pub type Attrs = Modifier;
 
 /// One cell in the grid.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cell {
-    pub ch: char,
+    pub symbol: String,
     pub fg: Color,
     pub bg: Color,
     pub attrs: Attrs,
@@ -23,7 +23,7 @@ pub struct Cell {
 impl Default for Cell {
     fn default() -> Self {
         Self {
-            ch: ' ',
+            symbol: " ".to_string(),
             fg: Color::Reset,
             bg: Color::Reset,
             attrs: Modifier::empty(),
@@ -91,6 +91,6 @@ impl Grid {
     }
 
     pub fn fill(&mut self, cell: Cell) {
-        self.cells.iter_mut().for_each(|c| *c = cell);
+        self.cells.iter_mut().for_each(|c| *c = cell.clone());
     }
 }

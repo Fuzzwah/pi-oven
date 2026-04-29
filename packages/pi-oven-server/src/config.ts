@@ -47,11 +47,7 @@ function expandHome(p: string): string {
 }
 
 function defaultConfigPath(env: NodeJS.ProcessEnv): string {
-  const dataDirOverride = env.PI_OVEN_DATA_DIR;
-  const base = dataDirOverride
-    ? expandHome(dataDirOverride)
-    : join(homedir(), ".pi-oven");
-  return join(base, "server.toml");
+  return join(homedir(), ".pi-oven", "server.toml");
 }
 
 function asLogLevel(value: unknown, source: string): LogLevel {
@@ -61,6 +57,22 @@ function asLogLevel(value: unknown, source: string): LogLevel {
     );
   }
   return value as LogLevel;
+}
+
+function asTimeZone(value: unknown, source: string): string {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new ConfigError(`${source}: invalid tz "${String(value)}"`);
+  }
+
+  try {
+    new Intl.DateTimeFormat("en-CA", { timeZone: value });
+  } catch (err) {
+    throw new ConfigError(
+      `${source}: invalid tz "${value}": ${(err as Error).message}`,
+    );
+  }
+
+  return value;
 }
 
 export function loadConfig(opts: LoadConfigOptions = {}): ServerConfig {
@@ -108,7 +120,7 @@ export function loadConfig(opts: LoadConfigOptions = {}): ServerConfig {
       ? asLogLevel(fileValues.log_level, configPath)
       : DEFAULT_LOG_LEVEL;
   let tz =
-    typeof fileValues.tz === "string" ? fileValues.tz : DEFAULT_TZ;
+    fileValues.tz !== undefined ? asTimeZone(fileValues.tz, configPath) : DEFAULT_TZ;
 
   if (env.PI_OVEN_DATA_DIR !== undefined && env.PI_OVEN_DATA_DIR !== "") {
     data_dir = env.PI_OVEN_DATA_DIR;
@@ -117,7 +129,7 @@ export function loadConfig(opts: LoadConfigOptions = {}): ServerConfig {
     log_level = asLogLevel(env.PI_OVEN_LOG_LEVEL, "PI_OVEN_LOG_LEVEL");
   }
   if (env.PI_OVEN_TZ !== undefined && env.PI_OVEN_TZ !== "") {
-    tz = env.PI_OVEN_TZ;
+    tz = asTimeZone(env.PI_OVEN_TZ, "PI_OVEN_TZ");
   }
 
   return {

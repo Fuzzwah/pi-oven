@@ -57,12 +57,11 @@ impl Backend for RatatuiGridBackend {
         I: Iterator<Item = (u16, u16, &'a RatatuiCell)>,
     {
         for (x, y, rcell) in content {
-            let ch = rcell.symbol().chars().next().unwrap_or(' ');
             self.grid.set(
                 x,
                 y,
                 Cell {
-                    ch,
+                    symbol: rcell.symbol().to_string(),
                     fg: rcell.fg,
                     bg: rcell.bg,
                     attrs: rcell.modifier,
