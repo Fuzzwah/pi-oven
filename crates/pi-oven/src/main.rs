@@ -12,6 +12,7 @@ compile_error!(
 
 #[cfg(feature = "dev-wgpu")]
 mod keys;
+mod config;
 
 const CLIENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -19,7 +20,7 @@ fn init_tracing() {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,cosmic_text=error")),
         )
         .init();
 }
@@ -115,24 +116,31 @@ mod wgpu_main {
 
     use anyhow::Result;
     use pi_oven_render::{Painter, RatatuiGridBackend};
-    use ratatui::layout::Rect;
-    use ratatui::widgets::Paragraph;
     use ratatui::Terminal;
+    use std::time::{Duration, Instant};
+
     use winit::application::ApplicationHandler;
     use winit::event::{KeyEvent, WindowEvent};
-    use winit::event_loop::{ActiveEventLoop, EventLoop};
-    use winit::keyboard::ModifiersState;
+    use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+    use winit::keyboard::{Key, ModifiersState, NamedKey};
     use winit::window::{Window, WindowAttributes, WindowId};
 
     use crate::keys::{translate, KeyAction};
 
-    const FONT_SIZE_PX: f32 = 14.0;
+    const FONT_SIZE_PX: f32 = 18.0;
+    const FONT_SIZE_STEP: f32 = 2.0;
+    const FONT_SIZE_MIN: f32 = 12.0;
+    const FONT_SIZE_MAX: f32 = 48.0;
+    const CURSOR_BLINK_INTERVAL: Duration = Duration::from_millis(530);
 
     struct App {
         window: Option<Arc<Window>>,
         painter: Option<Painter>,
         terminal: Option<Terminal<RatatuiGridBackend>>,
         modifiers: ModifiersState,
+        font_size: f32,
+        app_state: pi_oven_ui::AppState,
+        next_blink: Instant,
     }
 
     impl App {
@@ -142,7 +150,16 @@ mod wgpu_main {
                 painter: None,
                 terminal: None,
                 modifiers: ModifiersState::empty(),
+                font_size: crate::config::load_font_size(FONT_SIZE_PX)
+                    .clamp(FONT_SIZE_MIN, FONT_SIZE_MAX),
+                app_state: pi_oven_ui::AppState::default(),
+                next_blink: Instant::now() + CURSOR_BLINK_INTERVAL,
             }
+        }
+
+        fn reset_blink(&mut self) {
+            self.app_state.cursor_visible = true;
+            self.next_blink = Instant::now() + CURSOR_BLINK_INTERVAL;
         }
 
         fn rebuild_terminal(&mut self) {
@@ -162,14 +179,15 @@ mod wgpu_main {
             else {
                 return;
             };
+            let state = &self.app_state;
             if let Err(e) = terminal.draw(|f| {
-                let area = Rect::new(0, 0, f.area().width, 1);
-                f.render_widget(Paragraph::new("pi-oven"), area);
+                pi_oven_ui::render(f, state);
             }) {
                 tracing::error!(?e, "ratatui draw failed");
                 return;
             }
-            if let Err(e) = painter.paint(terminal.backend().grid()) {
+            let dirty = terminal.backend_mut().take_dirty_rows();
+            if let Err(e) = painter.paint(terminal.backend().grid(), &dirty) {
                 tracing::error!(?e, "wgpu paint failed");
             }
         }
@@ -242,6 +260,18 @@ mod wgpu_main {
                 _ => {}
             }
         }
+
+        fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+            let now = Instant::now();
+            if now >= self.next_blink {
+                self.app_state.cursor_visible = !self.app_state.cursor_visible;
+                self.next_blink = now + CURSOR_BLINK_INTERVAL;
+                if let Some(w) = self.window.as_ref() {
+                    w.request_redraw();
+                }
+            }
+            event_loop.set_control_flow(ControlFlow::WaitUntil(self.next_blink));
+        }
     }
 
     impl App {
@@ -257,9 +287,47 @@ mod wgpu_main {
                 pressed = ev.state.is_pressed(),
                 "keyboard event"
             );
-            if matches!(action, KeyAction::CmdW) {
-                event_loop.exit();
+            match action {
+                KeyAction::CmdW => { event_loop.exit(); return; }
+                KeyAction::CmdEqual => { self.adjust_font_size(FONT_SIZE_STEP); return; }
+                KeyAction::CmdMinus => { self.adjust_font_size(-FONT_SIZE_STEP); return; }
+                _ => {}
             }
+
+            // Text input: key press with no Cmd/Ctrl modifier.
+            if ev.state.is_pressed()
+                && !self.modifiers.super_key()
+                && !self.modifiers.control_key()
+            {
+                let changed = match &ev.logical_key {
+                    Key::Named(NamedKey::Backspace) => self.app_state.input.pop().is_some(),
+                    _ => match ev.text.as_deref() {
+                        Some(s) if !s.is_empty() => {
+                            self.app_state.input.push_str(s);
+                            true
+                        }
+                        _ => false,
+                    },
+                };
+                if changed {
+                    self.reset_blink();
+                    self.redraw();
+                }
+            }
+        }
+
+        fn adjust_font_size(&mut self, delta: f32) {
+            let new_size = (self.font_size + delta).clamp(FONT_SIZE_MIN, FONT_SIZE_MAX);
+            if (new_size - self.font_size).abs() < 0.01 {
+                return;
+            }
+            self.font_size = new_size;
+            crate::config::save_font_size(new_size);
+            if let Some(painter) = self.painter.as_mut() {
+                painter.set_font_size(new_size);
+            }
+            self.rebuild_terminal();
+            self.redraw();
         }
     }
 
@@ -285,8 +353,6 @@ mod crossterm_main {
         execute,
         terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     };
-    use ratatui::layout::Rect;
-    use ratatui::widgets::Paragraph;
     use ratatui::Terminal;
     use std::io::stdout;
     use std::time::Duration;
@@ -298,18 +364,20 @@ mod crossterm_main {
         let backend = CrosstermBackend::new(out);
         let mut terminal = Terminal::new(backend)?;
 
+        let mut app_state = pi_oven_ui::AppState::default();
         let result = (|| -> Result<()> {
             loop {
                 terminal.draw(|f| {
-                    let area = Rect::new(0, 0, f.area().width, 1);
-                    f.render_widget(Paragraph::new("pi-oven"), area);
+                    pi_oven_ui::render(f, &app_state);
                 })?;
 
-                if event::poll(Duration::from_millis(100))? {
+                if event::poll(Duration::from_millis(16))? {
                     if let Event::Key(k) = event::read()? {
                         if k.kind == KeyEventKind::Press {
                             match k.code {
-                                KeyCode::Char('q') | KeyCode::Esc => break,
+                                KeyCode::Esc => break,
+                                KeyCode::Backspace => { app_state.input.pop(); }
+                                KeyCode::Char(c) => app_state.input.push(c),
                                 _ => {}
                             }
                         }

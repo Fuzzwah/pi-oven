@@ -865,12 +865,30 @@ Useful but not foundational; can land at any point.
 
 ---
 
+## Current development state
+
+**Branch: `fuz/render-empty-panes`** — renderer scaffold only, no server wiring yet.
+
+The native macOS window boots, renders, and responds to input. This was built as a development scaffold to validate the rendering pipeline before committing to server integration:
+
+- `pi-oven-render`: wgpu + glyphon paint pipeline, custom `RatatuiGridBackend`, per-row dirty tracking (only changed rows re-shaped per frame), `Modifier::REVERSED` support for the block cursor.
+- `pi-oven-ui`: four empty panes (sidebar, tabs, conversation, input bar) laid out with ratatui. Placeholder labels only — no real data, no server connection.
+- `pi-oven`: font size controls (Cmd+=/−, persisted to `~/.pi-oven/client.toml`), basic text input into the input bar, blinking cursor (530ms via `ControlFlow::WaitUntil`).
+
+The empty panes and placeholder text are **scaffolding**. They prove the renderer works end-to-end but have no production intent on their own. Real widget logic lands in Slice 1 once the WebSocket handshake is in place.
+
+**OpenSpec change: `input-editor`** — proposed, not yet implemented.
+
+A full single-line editor (`InputEditor` struct with cursor position, selection range, word/line movement, Option+arrow, Cmd+arrow, Shift-select, delete variants) has been designed and specced. It is parked intentionally: there is nothing to wire it up to until the client connects to the server and the input bar is sending real messages. It will land as part of Slice 1 alongside the WebSocket handshake — see the Skeleton slice below.
+
+---
+
 ## Sequencing (within the full-workflow MVP)
 
 Even though the target is end-to-end, build in slices that each leave a working app. Each slice is shippable on its own.
 
 0. **Foundations (de-risk first)** — pi SDK spike (verify resume API, error semantics, multi-session safety, **and multimodal-content API for image attachments**) → notes in [docs/pi-sdk-notes.md](docs/pi-sdk-notes.md); winit + wgpu + glyphon + ratatui-custom-backend prototype that renders "hello world" in a window and reports cmd+1 / opt+\` / cmd+n events; toolchain manifest + bootstrap script. These are the highest-uncertainty pieces; cheaper to validate before the rest of the architecture commits to them.
-1. **Skeleton** — Cargo + pnpm scaffolding, single-instance lock, SQLite + migration runner with `0001_initial.sql`, structured logging, WebSocket handshake with shared key + Origin policy, frame heartbeat, render the same panes (empty), single hard-coded workspace with pi SDK round-trip and event log written to NDJSON. TUI baseline requirements (bake in from the start, not polish): scroll-position pinning during streaming (viewport stays at scroll position while agent generates; auto-follow restores on scroll-to-bottom), tab characters in tool output expanded to 8-column tab stops (prevents `line_number\TABcode` collapse), chat input word-cursor navigation (Option+Left/Right → `alt+b`/`alt+f`), input text wraps within box rather than overflowing, consistent continuation-row indent.
+1. **Skeleton** — Cargo + pnpm scaffolding, single-instance lock, SQLite + migration runner with `0001_initial.sql`, structured logging, WebSocket handshake with shared key + Origin policy, frame heartbeat, render the same panes (empty), single hard-coded workspace with pi SDK round-trip and event log written to NDJSON. TUI baseline requirements (bake in from the start, not polish): scroll-position pinning during streaming (viewport stays at scroll position while agent generates; auto-follow restores on scroll-to-bottom), tab characters in tool output expanded to 8-column tab stops (prevents `line_number\TABcode` collapse), chat input word-cursor navigation (Option+Left/Right, Cmd+Left/Right, Shift-select, delete variants) — the `openspec/changes/input-editor` change is already designed and specced, ready to apply (`/opsx:apply input-editor`), input text wraps within box rather than overflowing, consistent continuation-row indent.
 2. **Multi-workspace + tabs** — `WorkspaceManager`, tabs UI, hotkeys, eager re-attach on startup, replay-on-reconnect against the NDJSON log, worktree orphan cleanup. UX features landing here: ahead/behind branch counts in sidebar (`↑N` yellow / `↓N` red, suppressed when zero, refreshed every 30s from local git state — no network fetch); pinned agent status message (latest assistant status pinned to top of viewport once tool output pushes it off-screen, `─` separator, deactivates when back in view); sidebar selection stays in sync with active tab even when sidebar is hidden; `cmd+y` copies nearest visible code block to clipboard, repeat cycles through all blocks; `/btw <note>` queues a follow-up message without interrupting the running agent (`/btw` with no args opens queue editor, appears in `/` autocomplete); `@filename` autocomplete in chat input (typing `@` opens fuzzy file list from the current worktree); `always_show_sidebar = true` config option (sidebar toggle moves focus instead of hiding; opening/creating a workspace no longer auto-closes the sidebar).
 3. **Image attachments** — clipboard paste (`cmd+V`) via `arboard`; client-side PNG normalisation + thumbnail render; binary-frame upload protocol; server-side staging (`attachments` table + `~/.pi-oven/attachments/`); multimodal hand-off to pi; inline image rendering in the conversation pane; per-workspace cleanup. SCP upload companion (`cmd+u`): because the server runs on a separate LAN machine, SCP is the natural path for larger files — user browses workspace destination in the TUI, pi-oven generates the SCP command with the absolute server-side path and copies it to the clipboard via OSC 52 (works over SSH/tmux), user runs the command from their Mac, presses Enter inside pi-oven to scan for newly arrived or updated files and see their names confirmed in the dialog. **Lands here because pasting screenshots is the single workflow that currently forces dropping out of the TUI — fixing it early gets pi-oven into daily use sooner.**
 4. **New-workspace pickers** — Exploration → skill picker → spec picker → issue picker (in that order; each adds an external dependency: pi SDK skill listing → openspec scanner → tracker adapter).

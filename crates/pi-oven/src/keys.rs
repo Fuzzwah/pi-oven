@@ -25,6 +25,10 @@ pub enum KeyAction {
     CmdW,
     /// `Cmd + N` — new workspace.
     CmdN,
+    /// `Cmd + =` or `Cmd + +` — increase font size.
+    CmdEqual,
+    /// `Cmd + -` — decrease font size.
+    CmdMinus,
     /// Escape pressed (no modifiers).
     Escape,
     /// Anything else; the inner string is a debug-friendly description.
@@ -66,6 +70,8 @@ pub fn translate(event: &KeyEvent, modifiers: ModifiersState) -> KeyAction {
                 (Some('`'), true) if alt => KeyAction::OptionBackquote,
                 (Some('w'), true) | (Some('W'), true) if cmd => KeyAction::CmdW,
                 (Some('n'), true) | (Some('N'), true) if cmd => KeyAction::CmdN,
+                (Some('='), true) | (Some('+'), true) if cmd => KeyAction::CmdEqual,
+                (Some('-'), true) | (Some('_'), true) if cmd => KeyAction::CmdMinus,
                 (Some(c), true) if cmd && c.is_ascii_alphabetic() => {
                     KeyAction::CmdLetter(c.to_ascii_lowercase())
                 }

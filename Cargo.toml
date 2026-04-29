@@ -14,3 +14,22 @@ incremental = true
 [profile.dev.package."*"]
 opt-level = 0
 debug = false
+
+# CPU-bound rendering deps: glyph rasterization (swash), font shaping
+# (cosmic-text, rustybuzz), and the glyphon pipeline are all math-heavy
+# and run ~100x slower at opt-level 0. Opt into release-like codegen so
+# font resize and frame paint stay fast during development.
+[profile.dev.package.swash]
+opt-level = 2
+[profile.dev.package.cosmic-text]
+opt-level = 2
+[profile.dev.package.rustybuzz]
+opt-level = 2
+[profile.dev.package.glyphon]
+opt-level = 2
+[profile.dev.package.ttf-parser]
+opt-level = 2
+# First-party render crate has hot loops (build_row_spans, fill-rect assembly)
+# that need opt-level 2 to stay fast in dev builds.
+[profile.dev.package.pi-oven-render]
+opt-level = 2
