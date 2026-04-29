@@ -175,6 +175,8 @@ cargo run -p pi-oven --no-default-features --features dev-crossterm # terminal-b
 cargo bundle --release                                              # package as pi-oven.app under target/release/bundle/osx/
 ```
 
+`cargo run -p pi-oven` now opens a window with four pane shells: a sidebar (Projects), a tab strip, a conversation pane, and an input bar. All panes show placeholder labels — real state is wired in subsequent slices.
+
 ### Recommended dev loop
 
 Two terminals:

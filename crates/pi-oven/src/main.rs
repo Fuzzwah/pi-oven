@@ -115,8 +115,6 @@ mod wgpu_main {
 
     use anyhow::Result;
     use pi_oven_render::{Painter, RatatuiGridBackend};
-    use ratatui::layout::Rect;
-    use ratatui::widgets::Paragraph;
     use ratatui::Terminal;
     use winit::application::ApplicationHandler;
     use winit::event::{KeyEvent, WindowEvent};
@@ -163,8 +161,7 @@ mod wgpu_main {
                 return;
             };
             if let Err(e) = terminal.draw(|f| {
-                let area = Rect::new(0, 0, f.area().width, 1);
-                f.render_widget(Paragraph::new("pi-oven"), area);
+                pi_oven_ui::render(f);
             }) {
                 tracing::error!(?e, "ratatui draw failed");
                 return;
@@ -285,8 +282,6 @@ mod crossterm_main {
         execute,
         terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     };
-    use ratatui::layout::Rect;
-    use ratatui::widgets::Paragraph;
     use ratatui::Terminal;
     use std::io::stdout;
     use std::time::Duration;
@@ -301,8 +296,7 @@ mod crossterm_main {
         let result = (|| -> Result<()> {
             loop {
                 terminal.draw(|f| {
-                    let area = Rect::new(0, 0, f.area().width, 1);
-                    f.render_widget(Paragraph::new("pi-oven"), area);
+                    pi_oven_ui::render(f);
                 })?;
 
                 if event::poll(Duration::from_millis(100))? {
