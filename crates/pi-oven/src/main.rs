@@ -12,6 +12,7 @@ compile_error!(
 
 #[cfg(feature = "dev-wgpu")]
 mod keys;
+mod config;
 
 const CLIENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -145,7 +146,7 @@ mod wgpu_main {
                 painter: None,
                 terminal: None,
                 modifiers: ModifiersState::empty(),
-                font_size: FONT_SIZE_PX,
+                font_size: crate::config::load_font_size(FONT_SIZE_PX),
                 app_state: pi_oven_ui::AppState::default(),
             }
         }
@@ -297,6 +298,7 @@ mod wgpu_main {
                 return;
             }
             self.font_size = new_size;
+            crate::config::save_font_size(new_size);
             if let Some(painter) = self.painter.as_mut() {
                 painter.set_font_size(new_size);
             }
