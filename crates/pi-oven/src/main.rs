@@ -117,9 +117,11 @@ mod wgpu_main {
     use anyhow::Result;
     use pi_oven_render::{Painter, RatatuiGridBackend};
     use ratatui::Terminal;
+    use std::time::{Duration, Instant};
+
     use winit::application::ApplicationHandler;
     use winit::event::{KeyEvent, WindowEvent};
-    use winit::event_loop::{ActiveEventLoop, EventLoop};
+    use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
     use winit::keyboard::{Key, ModifiersState, NamedKey};
     use winit::window::{Window, WindowAttributes, WindowId};
 
@@ -129,6 +131,7 @@ mod wgpu_main {
     const FONT_SIZE_STEP: f32 = 2.0;
     const FONT_SIZE_MIN: f32 = 12.0;
     const FONT_SIZE_MAX: f32 = 48.0;
+    const CURSOR_BLINK_INTERVAL: Duration = Duration::from_millis(530);
 
     struct App {
         window: Option<Arc<Window>>,
@@ -137,6 +140,7 @@ mod wgpu_main {
         modifiers: ModifiersState,
         font_size: f32,
         app_state: pi_oven_ui::AppState,
+        next_blink: Instant,
     }
 
     impl App {
@@ -149,7 +153,13 @@ mod wgpu_main {
                 font_size: crate::config::load_font_size(FONT_SIZE_PX)
                     .clamp(FONT_SIZE_MIN, FONT_SIZE_MAX),
                 app_state: pi_oven_ui::AppState::default(),
+                next_blink: Instant::now() + CURSOR_BLINK_INTERVAL,
             }
+        }
+
+        fn reset_blink(&mut self) {
+            self.app_state.cursor_visible = true;
+            self.next_blink = Instant::now() + CURSOR_BLINK_INTERVAL;
         }
 
         fn rebuild_terminal(&mut self) {
@@ -250,6 +260,18 @@ mod wgpu_main {
                 _ => {}
             }
         }
+
+        fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+            let now = Instant::now();
+            if now >= self.next_blink {
+                self.app_state.cursor_visible = !self.app_state.cursor_visible;
+                self.next_blink = now + CURSOR_BLINK_INTERVAL;
+                if let Some(w) = self.window.as_ref() {
+                    w.request_redraw();
+                }
+            }
+            event_loop.set_control_flow(ControlFlow::WaitUntil(self.next_blink));
+        }
     }
 
     impl App {
@@ -288,6 +310,7 @@ mod wgpu_main {
                     },
                 };
                 if changed {
+                    self.reset_blink();
                     self.redraw();
                 }
             }

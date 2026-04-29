@@ -16,10 +16,17 @@ use ratatui::layout::{Constraint, Layout};
 use ratatui::Frame;
 
 /// Application state passed into every render call.
-#[derive(Default)]
 pub struct AppState {
     /// Current contents of the input bar.
     pub input: String,
+    /// Whether the cursor is in its "on" phase of the blink cycle.
+    pub cursor_visible: bool,
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        Self { input: String::new(), cursor_visible: true }
+    }
 }
 
 pub fn render(frame: &mut Frame, state: &AppState) {
@@ -37,5 +44,5 @@ pub fn render(frame: &mut Frame, state: &AppState) {
     render_sidebar(sidebar_area, buf);
     render_tabs(tabs_area, buf);
     render_conversation(conversation_area, buf);
-    render_input(input_area, buf, &state.input);
+    render_input(input_area, buf, &state.input, state.cursor_visible);
 }
