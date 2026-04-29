@@ -127,7 +127,7 @@ mod wgpu_main {
 
     const FONT_SIZE_PX: f32 = 18.0;
     const FONT_SIZE_STEP: f32 = 2.0;
-    const FONT_SIZE_MIN: f32 = 8.0;
+    const FONT_SIZE_MIN: f32 = 12.0;
     const FONT_SIZE_MAX: f32 = 48.0;
 
     struct App {
@@ -146,7 +146,8 @@ mod wgpu_main {
                 painter: None,
                 terminal: None,
                 modifiers: ModifiersState::empty(),
-                font_size: crate::config::load_font_size(FONT_SIZE_PX),
+                font_size: crate::config::load_font_size(FONT_SIZE_PX)
+                    .clamp(FONT_SIZE_MIN, FONT_SIZE_MAX),
                 app_state: pi_oven_ui::AppState::default(),
             }
         }
