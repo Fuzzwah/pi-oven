@@ -17,6 +17,7 @@ pub struct RatatuiGridBackend {
     grid: Grid,
     cursor: Position,
     cursor_visible: bool,
+    content_changed: bool,
 }
 
 impl RatatuiGridBackend {
@@ -25,6 +26,7 @@ impl RatatuiGridBackend {
             grid: Grid::new(cols, rows),
             cursor: Position::new(0, 0),
             cursor_visible: true,
+            content_changed: false,
         }
     }
 
@@ -49,6 +51,13 @@ impl RatatuiGridBackend {
     pub fn cursor_visible(&self) -> bool {
         self.cursor_visible
     }
+
+    /// Returns whether any cells changed since the last call to this method.
+    /// Resets the flag on read. Ratatui only calls `draw()` with changed cells,
+    /// so a false return means the grid is identical to the previous frame.
+    pub fn take_content_changed(&mut self) -> bool {
+        std::mem::replace(&mut self.content_changed, false)
+    }
 }
 
 impl Backend for RatatuiGridBackend {
@@ -57,6 +66,7 @@ impl Backend for RatatuiGridBackend {
         I: Iterator<Item = (u16, u16, &'a RatatuiCell)>,
     {
         for (x, y, rcell) in content {
+            self.content_changed = true;
             self.grid.set(
                 x,
                 y,

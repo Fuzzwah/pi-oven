@@ -107,6 +107,12 @@ pub struct Painter {
     clear_color: ClearColor,
     #[allow(dead_code)]
     scale_factor: f64,
+
+    // Persistent per-frame render state. Rebuilt only when content or layout
+    // changes; warm on subsequent frames so paint() does minimal CPU work.
+    glyphon_buffer: Buffer,
+    rect_gpu_buf: Option<wgpu::Buffer>,
+    rect_vertex_count: u32,
 }
 
 impl Painter {
@@ -199,6 +205,15 @@ impl Painter {
             font_size_px,
         };
 
+        let mut glyphon_buffer =
+            Buffer::new(&mut font_system, Metrics::new(font_size_px, font_size_px * 1.25));
+        glyphon_buffer.set_size(
+            &mut font_system,
+            Some(size.width as f32),
+            Some(size.height as f32),
+        );
+        glyphon_buffer.set_wrap(&mut font_system, Wrap::None);
+
         Ok(Self {
             window,
             surface,
@@ -215,6 +230,9 @@ impl Painter {
             metrics,
             clear_color: ClearColor::default(),
             scale_factor,
+            glyphon_buffer,
+            rect_gpu_buf: None,
+            rect_vertex_count: 0,
         })
     }
 
@@ -228,6 +246,16 @@ impl Painter {
             line_height_px: font_size_px * 1.25,
             font_size_px,
         };
+        self.glyphon_buffer.set_metrics(
+            &mut self.font_system,
+            Metrics::new(font_size_px, font_size_px * 1.25),
+        );
+        self.glyphon_buffer.set_size(
+            &mut self.font_system,
+            Some(self.surface_config.width as f32),
+            Some(self.surface_config.height as f32),
+        );
+        self.rect_gpu_buf = None;
     }
 
     pub fn surface_size(&self) -> PhysicalSize<u32> {
@@ -250,6 +278,12 @@ impl Painter {
         self.surface_config.width = new_size.width;
         self.surface_config.height = new_size.height;
         self.surface.configure(&self.device, &self.surface_config);
+        self.glyphon_buffer.set_size(
+            &mut self.font_system,
+            Some(new_size.width as f32),
+            Some(new_size.height as f32),
+        );
+        self.rect_gpu_buf = None;
     }
 
     pub fn scale_factor_changed(&mut self, new_scale: f64) {
@@ -258,10 +292,14 @@ impl Painter {
         // physical size; we react there.
     }
 
-    /// Render `grid` to the surface. Clears to the configured background
-    /// colour, then draws one styled glyphon run per contiguous same-style
-    /// cell range.
-    pub fn paint(&mut self, grid: &Grid) -> Result<()> {
+    /// Render `grid` to the surface.
+    ///
+    /// `content_changed` should be true whenever the grid content has changed
+    /// since the last call (font resize, window resize, or UI update). When
+    /// false, the cached shaped buffer and GPU rect buffer are reused, and
+    /// `paint()` only pays the cost of `text_renderer.prepare()` (fast, warm
+    /// atlas) plus the GPU render pass itself.
+    pub fn paint(&mut self, grid: &Grid, content_changed: bool) -> Result<()> {
         let frame = match self.surface.get_current_texture() {
             Ok(f) => f,
             Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
@@ -280,33 +318,39 @@ impl Painter {
                     label: Some("pi-oven encoder"),
                 });
 
-        // Build the glyphon Buffer from the grid: one Attrs span per
-        // contiguous run of cells with identical (fg, bg, attrs).
-        let mut buffer = Buffer::new(
-            &mut self.font_system,
-            Metrics::new(self.metrics.font_size_px, self.metrics.line_height_px),
-        );
-        buffer.set_size(
-            &mut self.font_system,
-            Some(self.surface_config.width as f32),
-            Some(self.surface_config.height as f32),
-        );
-        buffer.set_wrap(&mut self.font_system, Wrap::None);
+        // Rebuild text layout and fill-rect geometry only when content or
+        // layout changed. On static frames this block is skipped entirely.
+        if content_changed || self.rect_gpu_buf.is_none() {
+            let lines = build_lines(grid);
+            let spans: Vec<(&str, Attrs)> = lines
+                .iter()
+                .flat_map(|line| line.spans.iter().map(|s| (s.text.as_str(), s.attrs.clone())))
+                .collect();
+            let default_attrs = Attrs::new().family(Family::Monospace);
+            self.glyphon_buffer.set_rich_text(
+                &mut self.font_system,
+                spans.iter().map(|(t, a)| (*t, a.clone())),
+                default_attrs,
+                Shaping::Basic,
+            );
+            self.glyphon_buffer.shape_until_scroll(&mut self.font_system, false);
 
-        let lines = build_lines(grid);
-        let fill_rects = build_fill_rects(grid, self.metrics);
-        let spans: Vec<(&str, Attrs)> = lines
-            .iter()
-            .flat_map(|line| line.spans.iter().map(|s| (s.text.as_str(), s.attrs.clone())))
-            .collect();
-        let default_attrs = Attrs::new().family(Family::Monospace);
-        buffer.set_rich_text(
-            &mut self.font_system,
-            spans.iter().map(|(t, a)| (*t, a.clone())),
-            default_attrs,
-            Shaping::Basic,
-        );
-        buffer.shape_until_scroll(&mut self.font_system, false);
+            let fill_rects = build_fill_rects(grid, self.metrics);
+            let rect_vertices = fill_rects_to_vertices(
+                &fill_rects,
+                self.surface_config.width as f32,
+                self.surface_config.height as f32,
+            );
+            self.rect_vertex_count = rect_vertices.len() as u32;
+            self.rect_gpu_buf = (!rect_vertices.is_empty()).then(|| {
+                self.device
+                    .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("pi-oven fill rect buffer"),
+                        contents: bytemuck::cast_slice(&rect_vertices),
+                        usage: wgpu::BufferUsages::VERTEX,
+                    })
+            });
+        }
 
         self.viewport.update(
             &self.queue,
@@ -316,45 +360,35 @@ impl Painter {
             },
         );
 
-        self.text_renderer
-            .prepare(
-                &self.device,
-                &self.queue,
-                &mut self.font_system,
-                &mut self.atlas,
-                &self.viewport,
-                [TextArea {
-                    buffer: &buffer,
-                    left: 0.0,
-                    top: 0.0,
-                    scale: 1.0,
-                    bounds: TextBounds {
-                        left: 0,
-                        top: 0,
-                        right: self.surface_config.width as i32,
-                        bottom: self.surface_config.height as i32,
-                    },
-                    default_color: GColor::rgb(0xff, 0xff, 0xff),
-                    custom_glyphs: &[],
-                }],
-                &mut self.swash_cache,
-            )
-            .context("prepare glyphon text")?;
+        {
+            let text_area = TextArea {
+                buffer: &self.glyphon_buffer,
+                left: 0.0,
+                top: 0.0,
+                scale: 1.0,
+                bounds: TextBounds {
+                    left: 0,
+                    top: 0,
+                    right: self.surface_config.width as i32,
+                    bottom: self.surface_config.height as i32,
+                },
+                default_color: GColor::rgb(0xff, 0xff, 0xff),
+                custom_glyphs: &[],
+            };
+            self.text_renderer
+                .prepare(
+                    &self.device,
+                    &self.queue,
+                    &mut self.font_system,
+                    &mut self.atlas,
+                    &self.viewport,
+                    [text_area],
+                    &mut self.swash_cache,
+                )
+                .context("prepare glyphon text")?;
+        }
 
         {
-            let rect_vertices = fill_rects_to_vertices(
-                &fill_rects,
-                self.surface_config.width as f32,
-                self.surface_config.height as f32,
-            );
-            let rect_buffer = (!rect_vertices.is_empty()).then(|| {
-                self.device
-                    .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: Some("pi-oven fill rect buffer"),
-                        contents: bytemuck::cast_slice(&rect_vertices),
-                        usage: wgpu::BufferUsages::VERTEX,
-                    })
-            });
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("pi-oven main pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -369,10 +403,10 @@ impl Painter {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
-            if let Some(rect_buffer) = rect_buffer.as_ref() {
+            if let Some(rect_buf) = self.rect_gpu_buf.as_ref() {
                 pass.set_pipeline(&self.rect_pipeline);
-                pass.set_vertex_buffer(0, rect_buffer.slice(..));
-                pass.draw(0..rect_vertices.len() as u32, 0..1);
+                pass.set_vertex_buffer(0, rect_buf.slice(..));
+                pass.draw(0..self.rect_vertex_count, 0..1);
             }
             self.text_renderer
                 .render(&self.atlas, &self.viewport, &mut pass)

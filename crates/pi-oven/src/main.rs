@@ -171,7 +171,8 @@ mod wgpu_main {
                 tracing::error!(?e, "ratatui draw failed");
                 return;
             }
-            if let Err(e) = painter.paint(terminal.backend().grid()) {
+            let content_changed = terminal.backend_mut().take_content_changed();
+            if let Err(e) = painter.paint(terminal.backend().grid(), content_changed) {
                 tracing::error!(?e, "wgpu paint failed");
             }
         }
